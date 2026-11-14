@@ -1,0 +1,6 @@
+{
+  "name": "Gordis Burguer",
+  "description": "Sistema integral de gestión para restaurante de comida rápida: Gerencia, Mesera, Cocina KDS y Menú Digital.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

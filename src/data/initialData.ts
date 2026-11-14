@@ -1,0 +1,263 @@
+import {
+  CashClosureRecord,
+  Order,
+  PaymentMethod,
+  Product,
+  RoleCredentials,
+} from '../types/restaurant';
+
+export const BRAND_LOGO_URL = '/assets/aistudio/Screenshot_20261114-124540_f539c348.jpg';
+export const LOGIN_BG_URL = '/assets/aistudio/bca7550cadd5d3c0bb81abe7d2c72a36_5d945dad.jpg';
+
+export const INITIAL_CREDENTIALS: RoleCredentials = {
+  gerencia: 'admin123',
+  mesera: 'mesera123',
+  cocina: 'cocina123',
+};
+
+export const PRESET_PRODUCT_IMAGES: { label: string; url: string }[] = [
+  {
+    label: 'Hamburguesa Doble Clásica',
+    url: '/src/assets/images/product_burger_classic_1794677105832.jpg',
+  },
+  {
+    label: 'Hamburguesa BBQ Crispy',
+    url: '/src/assets/images/product_burger_bbq_1794677105743.jpg',
+  },
+  {
+    label: 'Perro Caliente Gourmet',
+    url: '/src/assets/images/product_hotdog_gourmet_1794677105927.jpg',
+  },
+  {
+    label: 'Papas Fritas Cargadas',
+    url: '/src/assets/images/product_fries_loaded_1794677106406.jpg',
+  },
+];
+
+export const INITIAL_PRODUCTS: Product[] = [
+  {
+    id: 'prod-1',
+    name: 'Gordis Doble Smash',
+    category: 'Hamburguesa',
+    description:
+      'Doble carne smash de res sellada a la plancha, doble queso cheddar fundido, cebolla caramelizada, lechuga fresca y salsa secreta de la casa en pan brioche tostado.',
+    price: 9.5,
+    imageUrl: '/src/assets/images/product_burger_classic_1794677105832.jpg',
+    available: true,
+  },
+  {
+    id: 'prod-2',
+    name: 'BBQ Bacon & Crispy Rings',
+    category: 'Hamburguesa',
+    description:
+      'Medallón artesanal de 180g, tocineta ahumada crujiente, aros de cebolla dorados, queso cheddar madurado, cebolla morada y baño de salsa BBQ ahumada.',
+    price: 11.0,
+    imageUrl: '/src/assets/images/product_burger_bbq_1794677105743.jpg',
+    available: true,
+  },
+  {
+    id: 'prod-3',
+    name: 'Gordis Clásica de la Casa',
+    category: 'Hamburguesa',
+    description:
+      'Carne de res jugosa a la parrilla, queso americano, tomate fresco, pepinillos encurtidos, lechuga crujiente y aderezo tártaro artesanal.',
+    price: 7.5,
+    imageUrl: '/src/assets/images/product_burger_classic_1794677105832.jpg',
+    available: true,
+  },
+  {
+    id: 'prod-4',
+    name: 'Perro Caliente Bacon Cheddar',
+    category: 'Perro Caliente',
+    description:
+      'Salchicha alemana premium en pan brioche dorado a la mantequilla, lluvia de tocineta crocante, cebolla caramelizada, salsa cheddar tibia y papas hilo.',
+    price: 6.5,
+    imageUrl: '/src/assets/images/product_hotdog_gourmet_1794677105927.jpg',
+    available: true,
+  },
+  {
+    id: 'prod-5',
+    name: 'Perro Caliente Callejero XL',
+    category: 'Perro Caliente',
+    description:
+      'Salchicha jumbo a la plancha, repollo rallado fino, maíz dulce, queso blanco rallado, papas trituradas y trío de salsas clásicas.',
+    price: 5.0,
+    imageUrl: '/src/assets/images/product_hotdog_gourmet_1794677105927.jpg',
+    available: true,
+  },
+  {
+    id: 'prod-6',
+    name: 'Papas Gordis Cargadas',
+    category: 'Papas Fritas',
+    description:
+      'Porción generosa de papas fritas corte rústico bañadas en crema de queso cheddar fundido, trozos de tocineta ahumada y cebollín fresco picado.',
+    price: 6.0,
+    imageUrl: '/src/assets/images/product_fries_loaded_1794677106406.jpg',
+    available: true,
+  },
+  {
+    id: 'prod-7',
+    name: 'Papas Fritas Clásicas',
+    category: 'Papas Fritas',
+    description:
+      'Papas crujientes doradas al punto exacto con sal marina en escamas y acompañadas de salsa tártara o kétchup de la casa.',
+    price: 3.5,
+    imageUrl: '/src/assets/images/product_fries_loaded_1794677106406.jpg',
+    available: true,
+  },
+];
+
+export const INITIAL_PAYMENT_METHODS: PaymentMethod[] = [
+  {
+    id: 'pm-pago-movil',
+    name: 'Pago Móvil',
+    details: 'Banesco (0134) · V-24.890.112 · Tel: 0414-555-8910',
+    requiresProof: true,
+    enabled: true,
+  },
+  {
+    id: 'pm-zelle',
+    name: 'Zelle',
+    details: 'pagos@gordisburguer.com · Titular: Gordis Burguer C.A.',
+    requiresProof: true,
+    enabled: true,
+  },
+  {
+    id: 'pm-efectivo',
+    name: 'Efectivo ($ / Bs)',
+    details: 'Pago en caja o al motorizado al recibir tu pedido.',
+    requiresProof: false,
+    enabled: true,
+  },
+  {
+    id: 'pm-tarjeta',
+    name: 'Tarjeta / Punto de Venta',
+    details: 'Débito y crédito nacional/internacional en mostrador o mesa.',
+    requiresProof: false,
+    enabled: true,
+  },
+];
+
+const now = Date.now();
+const minsAgo = (m: number) => new Date(now - m * 60_000).toISOString();
+
+export const INITIAL_ORDERS: Order[] = [
+  {
+    id: 'ord-101',
+    code: '#GB-101',
+    source: 'mesera',
+    modality: 'sitio',
+    tableNumber: 3,
+    items: [
+      {
+        productId: 'prod-1',
+        name: 'Gordis Doble Smash',
+        price: 9.5,
+        quantity: 2,
+        notes: '1 sin cebolla caramelizada',
+      },
+      {
+        productId: 'prod-6',
+        name: 'Papas Gordis Cargadas',
+        price: 6.0,
+        quantity: 1,
+      },
+    ],
+    total: 25.0,
+    paymentMethodId: 'pm-tarjeta',
+    paymentMethodName: 'Tarjeta / Punto de Venta',
+    status: 'en_cocina',
+    createdAt: minsAgo(9),
+    updatedAt: minsAgo(6),
+    notes: 'Servir las papas bien calientes junto a las burgers.',
+  },
+  {
+    id: 'ord-102',
+    code: '#GB-102',
+    source: 'menu_publico',
+    modality: 'delivery',
+    customerName: 'Carlos Mendoza',
+    customerPhone: '0412-889-3210',
+    deliveryAddress: 'Av. Principal Las Mercedes, Res. El Mirador Piso 4',
+    items: [
+      {
+        productId: 'prod-2',
+        name: 'BBQ Bacon & Crispy Rings',
+        price: 11.0,
+        quantity: 1,
+      },
+      {
+        productId: 'prod-4',
+        name: 'Perro Caliente Bacon Cheddar',
+        price: 6.5,
+        quantity: 2,
+      },
+    ],
+    total: 24.0,
+    paymentMethodId: 'pm-pago-movil',
+    paymentMethodName: 'Pago Móvil',
+    paymentProofName: 'comprobante_banesco_9821.jpg',
+    status: 'pendiente',
+    createdAt: minsAgo(4),
+    updatedAt: minsAgo(4),
+  },
+  {
+    id: 'ord-103',
+    code: '#GB-103',
+    source: 'mesera',
+    modality: 'sitio',
+    tableNumber: 7,
+    items: [
+      {
+        productId: 'prod-3',
+        name: 'Gordis Clásica de la Casa',
+        price: 7.5,
+        quantity: 2,
+      },
+      {
+        productId: 'prod-7',
+        name: 'Papas Fritas Clásicas',
+        price: 3.5,
+        quantity: 2,
+      },
+    ],
+    total: 22.0,
+    paymentMethodId: 'pm-efectivo',
+    paymentMethodName: 'Efectivo ($ / Bs)',
+    status: 'servido',
+    createdAt: minsAgo(35),
+    updatedAt: minsAgo(18),
+  },
+  {
+    id: 'ord-104',
+    code: '#GB-104',
+    source: 'menu_publico',
+    modality: 'delivery',
+    customerName: 'Valeria Rojas',
+    customerPhone: '0424-311-7740',
+    deliveryAddress: 'Calle Los Cedros, Edif. Altamira Sur Apto 2B',
+    items: [
+      {
+        productId: 'prod-1',
+        name: 'Gordis Doble Smash',
+        price: 9.5,
+        quantity: 1,
+      },
+      {
+        productId: 'prod-6',
+        name: 'Papas Gordis Cargadas',
+        price: 6.0,
+        quantity: 1,
+      },
+    ],
+    total: 15.5,
+    paymentMethodId: 'pm-zelle',
+    paymentMethodName: 'Zelle',
+    paymentProofName: 'zelle_valeria_1550.png',
+    status: 'en_camino',
+    createdAt: minsAgo(22),
+    updatedAt: minsAgo(5),
+  },
+];
+
+export const INITIAL_CLOSURES: CashClosureRecord[] = [];
