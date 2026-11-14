@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import {
   INITIAL_CLOSURES,
   INITIAL_CREDENTIALS,
+  INITIAL_DRIVERS,
   INITIAL_ORDERS,
   INITIAL_PAYMENT_METHODS,
   INITIAL_PRODUCTS,
@@ -9,6 +10,7 @@ import {
 import {
   ActiveModule,
   CashClosureRecord,
+  DeliveryDriver,
   Order,
   OrderStatus,
   PaymentMethod,
@@ -18,12 +20,13 @@ import {
   UserRole,
 } from '../types/restaurant';
 
-const STORAGE_KEY = 'gordis_burguer_state_v1';
+const STORAGE_KEY = 'gordis_burguer_state_v2';
 
 interface PersistedState {
   credentials: RoleCredentials;
   products: Product[];
   paymentMethods: PaymentMethod[];
+  drivers: DeliveryDriver[];
   orders: Order[];
   closures: CashClosureRecord[];
   nextOrderSeq: number;
@@ -36,6 +39,7 @@ interface RestaurantContextValue {
   credentials: RoleCredentials;
   products: Product[];
   paymentMethods: PaymentMethod[];
+  drivers: DeliveryDriver[];
   orders: Order[];
   closures: CashClosureRecord[];
   toasts: ToastMessage[];
@@ -49,10 +53,19 @@ interface RestaurantContextValue {
   togglePaymentMethod: (id: string) => void;
   updatePaymentMethod: (id: string, updates: Partial<Omit<PaymentMethod, 'id'>>) => void;
   addPaymentMethod: (method: Omit<PaymentMethod, 'id'>) => void;
+  addDriver: (driver: Omit<DeliveryDriver, 'id'>) => DeliveryDriver;
+  updateDriver: (id: string, updates: Partial<Omit<DeliveryDriver, 'id'>>) => void;
+  deleteDriver: (id: string) => void;
+  dispatchOrderWithDriver: (
+    orderId: string,
+    driver: DeliveryDriver,
+    customerPhoneOverride?: string
+  ) => void;
   createOrder: (
     orderInput: Omit<Order, 'id' | 'code' | 'status' | 'createdAt' | 'updatedAt'>
   ) => Order;
   updateOrder: (id: string, updates: Partial<Omit<Order, 'id' | 'code' | 'createdAt'>>) => void;
+  acknowledgeOrderModification: (id: string) => void;
   updateOrderStatus: (id: string, status: OrderStatus) => void;
   cancelOrder: (id: string) => void;
   performCashClosure: () => CashClosureRecord | null;
@@ -73,6 +86,7 @@ function loadInitialState(): PersistedState {
           credentials: parsed.credentials,
           products: parsed.products,
           paymentMethods: parsed.paymentMethods,
+          drivers: parsed.drivers ?? INITIAL_DRIVERS,
           orders: parsed.orders,
           closures: parsed.closures ?? INITIAL_CLOSURES,
           nextOrderSeq: parsed.nextOrderSeq ?? 105,
@@ -86,6 +100,7 @@ function loadInitialState(): PersistedState {
     credentials: INITIAL_CREDENTIALS,
     products: INITIAL_PRODUCTS,
     paymentMethods: INITIAL_PAYMENT_METHODS,
+    drivers: INITIAL_DRIVERS,
     orders: INITIAL_ORDERS,
     closures: INITIAL_CLOSURES,
     nextOrderSeq: 105,
@@ -125,7 +140,7 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
     });
   }, []);
 
-  // Cross-tab reactive sync (e.g. Public Menu open in another tab updates Cocina/Gerencia immediately)
+  // Cross-tab reactive sync
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (event.key === STORAGE_KEY && event.newValue) {
@@ -287,6 +302,70 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
     [persistState, showToast]
   );
 
+  const addDriver = useCallback(
+    (driverInput: Omit<DeliveryDriver, 'id'>): DeliveryDriver => {
+      const newDriver: DeliveryDriver = {
+        ...driverInput,
+        id: `drv-${Date.now()}`,
+      };
+      persistState((prev) => ({
+        ...prev,
+        drivers: [...prev.drivers, newDriver],
+      }));
+      showToast(`Conductor "${driverInput.name}" registrado en Delivery.`, 'success');
+      return newDriver;
+    },
+    [persistState, showToast]
+  );
+
+  const updateDriver = useCallback(
+    (id: string, updates: Partial<Omit<DeliveryDriver, 'id'>>) => {
+      persistState((prev) => ({
+        ...prev,
+        drivers: prev.drivers.map((d) => (d.id === id ? { ...d, ...updates } : d)),
+      }));
+      showToast('Datos del conductor actualizados.', 'success');
+    },
+    [persistState, showToast]
+  );
+
+  const deleteDriver = useCallback(
+    (id: string) => {
+      persistState((prev) => ({
+        ...prev,
+        drivers: prev.drivers.filter((d) => d.id !== id),
+      }));
+      showToast('Conductor eliminado de la lista.', 'info');
+    },
+    [persistState, showToast]
+  );
+
+  const dispatchOrderWithDriver = useCallback(
+    (orderId: string, driver: DeliveryDriver, customerPhoneOverride?: string) => {
+      const nowIso = new Date().toISOString();
+      persistState((prev) => ({
+        ...prev,
+        orders: prev.orders.map((ord) =>
+          ord.id === orderId
+            ? {
+                ...ord,
+                status: 'en_camino',
+                customerPhone: customerPhoneOverride?.trim() || ord.customerPhone,
+                assignedDriverId: driver.id,
+                assignedDriverName: driver.name,
+                assignedDriverPhone: driver.phone,
+                assignedDriverVehicle: `${driver.vehicleType} · ${driver.vehiclePlate}`,
+                dispatchedAt: nowIso,
+                updatedAt: nowIso,
+              }
+            : ord
+        ),
+      }));
+      showToast(`Pedido despachado con ${driver.name}. Notificaciones generadas.`, 'success');
+    },
+    [persistState, showToast]
+  );
+
   const createOrder = useCallback(
     (orderInput: Omit<Order, 'id' | 'code' | 'status' | 'createdAt' | 'updatedAt'>): Order => {
       const nowIso = new Date().toISOString();
@@ -317,13 +396,62 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
       const nowIso = new Date().toISOString();
       persistState((prev) => ({
         ...prev,
-        orders: prev.orders.map((ord) =>
-          ord.id === id ? { ...ord, ...updates, updatedAt: nowIso } : ord
-        ),
+        orders: prev.orders.map((ord) => {
+          if (ord.id !== id) return ord;
+
+          // Build a concise summary of what changed for Cocina KDS alert
+          const changes: string[] = [];
+          if (updates.items) {
+            const itemsSummary = updates.items
+              .map((i) => `${i.quantity}x ${i.name}`)
+              .join(', ');
+            changes.push(`Platos actualizados (${itemsSummary})`);
+          }
+          if (updates.notes !== undefined && updates.notes !== ord.notes) {
+            changes.push(
+              updates.notes
+                ? `Nueva observación: "${updates.notes}"`
+                : 'Observación eliminada'
+            );
+          }
+          if (updates.modality && updates.modality !== ord.modality) {
+            changes.push(`Modalidad cambiada a ${updates.modality}`);
+          }
+          if (updates.tableNumber !== undefined && updates.tableNumber !== ord.tableNumber) {
+            changes.push(`Mesa cambiada a M${updates.tableNumber}`);
+          }
+
+          const summaryText =
+            changes.length > 0
+              ? changes.join(' · ')
+              : 'Comanda editada después de su confirmación inicial';
+
+          return {
+            ...ord,
+            ...updates,
+            updatedAt: nowIso,
+            isModifiedAfterConfirm: true,
+            modifiedAt: nowIso,
+            modificationSummary: summaryText,
+            modificationAcknowledgedByKitchen: false,
+          };
+        }),
       }));
-      showToast('Pedido actualizado correctamente.', 'success');
+      showToast('Pedido modificado. Alerta enviada a Cocina.', 'success');
     },
     [persistState, showToast]
+  );
+
+  const acknowledgeOrderModification = useCallback(
+    (id: string) => {
+      persistState((prev) => ({
+        ...prev,
+        orders: prev.orders.map((ord) =>
+          ord.id === id ? { ...ord, modificationAcknowledgedByKitchen: true } : ord
+        ),
+      }));
+    },
+    [persistState]
   );
 
   const updateOrderStatus = useCallback(
@@ -407,6 +535,7 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
         credentials: state.credentials,
         products: state.products,
         paymentMethods: state.paymentMethods,
+        drivers: state.drivers,
         orders: state.orders,
         closures: state.closures,
         toasts,
@@ -420,8 +549,13 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
         togglePaymentMethod,
         updatePaymentMethod,
         addPaymentMethod,
+        addDriver,
+        updateDriver,
+        deleteDriver,
+        dispatchOrderWithDriver,
         createOrder,
         updateOrder,
+        acknowledgeOrderModification,
         updateOrderStatus,
         cancelOrder,
         performCashClosure,

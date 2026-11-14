@@ -40,6 +40,23 @@ export interface PaymentMethod {
   enabled: boolean;
 }
 
+export interface PagoMovilDetails {
+  bank: string;
+  amount: number;
+  referenceLast6: string;
+}
+
+export interface DeliveryDriver {
+  id: string;
+  name: string;
+  idNumber: string;
+  phone: string;
+  vehicleType: 'Moto' | 'Bicicleta' | 'Auto';
+  vehiclePlate: string;
+  zone?: string;
+  available: boolean;
+}
+
 export interface OrderItem {
   productId: string;
   name: string;
@@ -61,6 +78,7 @@ export interface Order {
   total: number;
   paymentMethodId: string;
   paymentMethodName: string;
+  pagoMovilDetails?: PagoMovilDetails;
   paymentProofName?: string;
   paymentProofUrl?: string;
   status: OrderStatus;
@@ -68,6 +86,17 @@ export interface Order {
   updatedAt: string;
   notes?: string;
   closedInShiftId?: string;
+  // Delivery assignment
+  assignedDriverId?: string;
+  assignedDriverName?: string;
+  assignedDriverPhone?: string;
+  assignedDriverVehicle?: string;
+  dispatchedAt?: string;
+  // Post-confirmation modification tracking for Cocina alert
+  isModifiedAfterConfirm?: boolean;
+  modifiedAt?: string;
+  modificationSummary?: string;
+  modificationAcknowledgedByKitchen?: boolean;
 }
 
 export interface CashClosureRecord {

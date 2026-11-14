@@ -1,5 +1,6 @@
 import {
   CashClosureRecord,
+  DeliveryDriver,
   Order,
   PaymentMethod,
   Product,
@@ -18,6 +19,42 @@ export const INITIAL_CREDENTIALS: RoleCredentials = {
   mesera: 'mesera123',
   cocina: 'cocina123',
 };
+
+export const PAGO_MOVIL_BANKS: string[] = [
+  'Banesco (0134)',
+  'Banco de Venezuela (0102)',
+  'Mercantil (0105)',
+  'BBVA Provincial (0108)',
+  'BNC - Banco Nacional de Crédito (0191)',
+  'Bancamiga (0172)',
+  'Bancaribe (0114)',
+  'Banco Exterior (0115)',
+  'Banco Plaza (0138)',
+  'Banplus (0174)',
+];
+
+export const INITIAL_DRIVERS: DeliveryDriver[] = [
+  {
+    id: 'drv-1',
+    name: 'José Gregorio Morales',
+    idNumber: 'V-23.410.892',
+    phone: '584145553210',
+    vehicleType: 'Moto',
+    vehiclePlate: 'Empire Horse · Placa AE4K91',
+    zone: 'Las Mercedes / Altamira / Chacao',
+    available: true,
+  },
+  {
+    id: 'drv-2',
+    name: 'Luis Eduardo Pérez',
+    idNumber: 'V-26.901.145',
+    phone: '584248881122',
+    vehicleType: 'Moto',
+    vehiclePlate: 'Bera SBR · Placa AB9M22',
+    zone: 'El Rosal / Sabana Grande / Centro',
+    available: true,
+  },
+];
 
 export const PRESET_PRODUCT_IMAGES: { label: string; url: string }[] = [
   {
@@ -181,7 +218,7 @@ export const INITIAL_ORDERS: Order[] = [
     source: 'menu_publico',
     modality: 'delivery',
     customerName: 'Carlos Mendoza',
-    customerPhone: '0412-889-3210',
+    customerPhone: '584128893210',
     deliveryAddress: 'Av. Principal Las Mercedes, Res. El Mirador Piso 4',
     items: [
       {
@@ -200,6 +237,11 @@ export const INITIAL_ORDERS: Order[] = [
     total: 24.0,
     paymentMethodId: 'pm-pago-movil',
     paymentMethodName: 'Pago Móvil',
+    pagoMovilDetails: {
+      bank: 'Banesco (0134)',
+      amount: 24.0,
+      referenceLast6: '489821',
+    },
     paymentProofName: 'comprobante_banesco_9821.jpg',
     status: 'pendiente',
     createdAt: minsAgo(4),
@@ -238,7 +280,7 @@ export const INITIAL_ORDERS: Order[] = [
     source: 'menu_publico',
     modality: 'delivery',
     customerName: 'Valeria Rojas',
-    customerPhone: '0424-311-7740',
+    customerPhone: '584243117740',
     deliveryAddress: 'Calle Los Cedros, Edif. Altamira Sur Apto 2B',
     items: [
       {
@@ -259,6 +301,11 @@ export const INITIAL_ORDERS: Order[] = [
     paymentMethodName: 'Zelle',
     paymentProofName: 'zelle_valeria_1550.png',
     status: 'en_camino',
+    assignedDriverId: 'drv-1',
+    assignedDriverName: 'José Gregorio Morales',
+    assignedDriverPhone: '584145553210',
+    assignedDriverVehicle: 'Moto · Empire Horse · Placa AE4K91',
+    dispatchedAt: minsAgo(5),
     createdAt: minsAgo(22),
     updatedAt: minsAgo(5),
   },

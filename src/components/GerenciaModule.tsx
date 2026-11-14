@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Bike,
   Check,
   CheckCircle2,
@@ -14,18 +15,25 @@ import {
   KeyRound,
   LogOut,
   MessageCircle,
+  Phone,
   Plus,
   Receipt,
   Share2,
   Trash2,
   Truck,
+  UserPlus,
   UtensilsCrossed,
   XCircle,
 } from 'lucide-react';
 import { PRESET_PRODUCT_IMAGES } from '../data/initialData';
 import { useRestaurant } from '../context/RestaurantContext';
 import { Order, Product, ProductCategory } from '../types/restaurant';
-import { EditOrderModal, PasswordsModal } from './GerenciaModals';
+import {
+  AddDriverModal,
+  DispatchDeliveryModal,
+  EditOrderModal,
+  PasswordsModal,
+} from './GerenciaModals';
 import {
   BrandLogo,
   OrderStatusText,
@@ -37,28 +45,41 @@ import {
 } from './SharedUI';
 
 type GerenciaTab =
+  | 'caja'
   | 'pedidos'
-  | 'menu'
-  | 'pagos'
-  | 'whatsapp'
-  | 'delivery'
   | 'cocina'
-  | 'caja';
+  | 'delivery'
+  | 'menu'
+  | 'whatsapp'
+  | 'pagos';
 
-const NAV_ITEMS: { id: GerenciaTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: 'pedidos', label: 'Control de Pedidos', icon: ClipboardList },
-  { id: 'menu', label: 'Menú y Precios', icon: UtensilsCrossed },
-  { id: 'pagos', label: 'Métodos de Pago', icon: CreditCard },
-  { id: 'whatsapp', label: 'Clientes & WhatsApp', icon: MessageCircle },
-  { id: 'delivery', label: 'Delivery', icon: Bike },
-  { id: 'cocina', label: 'Cocina (Espejo)', icon: ChefHat },
+// Reorganized in the exact order requested by the user:
+// 1. Caja Principal
+// 2. Control de Pedidos
+// 3. Cocina
+// 4. Delivery
+// 5. Menú y Precios
+// 6. Clientes & WhatsApp
+// 7. Métodos de Pago
+const NAV_ITEMS: {
+  id: GerenciaTab;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}[] = [
   { id: 'caja', label: 'Caja Principal', icon: DollarSign },
+  { id: 'pedidos', label: 'Control de Pedidos', icon: ClipboardList },
+  { id: 'cocina', label: 'Cocina', icon: ChefHat },
+  { id: 'delivery', label: 'Delivery', icon: Bike },
+  { id: 'menu', label: 'Menú y Precios', icon: UtensilsCrossed },
+  { id: 'whatsapp', label: 'Clientes & WhatsApp', icon: MessageCircle },
+  { id: 'pagos', label: 'Métodos de Pago', icon: CreditCard },
 ];
 
 export function GerenciaModule() {
   const {
     products,
     paymentMethods,
+    drivers,
     orders,
     closures,
     addProduct,
@@ -67,6 +88,7 @@ export function GerenciaModule() {
     togglePaymentMethod,
     updatePaymentMethod,
     addPaymentMethod,
+    deleteDriver,
     updateOrderStatus,
     cancelOrder,
     performCashClosure,
@@ -76,9 +98,11 @@ export function GerenciaModule() {
     showToast,
   } = useRestaurant();
 
-  const [activeTab, setActiveTab] = useState<GerenciaTab>('pedidos');
+  const [activeTab, setActiveTab] = useState<GerenciaTab>('caja');
   const [passwordsModalOpen, setPasswordsModalOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+  const [addDriverModalOpen, setAddDriverModalOpen] = useState(false);
+  const [dispatchingOrder, setDispatchingOrder] = useState<Order | null>(null);
 
   // Menu CRUD State
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -244,14 +268,11 @@ export function GerenciaModule() {
     }
   };
 
-  const handleSendWhatsApp = () => {
-    const cleanPhone = waPhone.replace(/\D/g, '');
-    const fullText = encodeURIComponent(`${waMessage}\n${generatedPublicUrl}`);
-    const targetUrl = cleanPhone
-      ? `https://wa.me/${cleanPhone}?text=${fullText}`
-      : `https://wa.me/?text=${fullText}`;
-    window.open(targetUrl, '_blank', 'noopener,noreferrer');
-  };
+  const cleanWaPhone = waPhone.replace(/\D/g, '');
+  const fullWaText = encodeURIComponent(`${waMessage}\n${generatedPublicUrl}`);
+  const waShareHref = cleanWaPhone
+    ? `https://wa.me/${cleanWaPhone}?text=${fullWaText}`
+    : `https://wa.me/?text=${fullWaText}`;
 
   const renderKanbanCard = (order: Order) => (
     <div
@@ -277,6 +298,13 @@ export function GerenciaModule() {
         <OrderStatusText status={order.status} />
       </div>
 
+      {order.isModifiedAfterConfirm && (
+        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-2.5 py-1">
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span>Modificado tras confirmar ({formatTime(order.modifiedAt ?? order.updatedAt)})</span>
+        </div>
+      )}
+
       <ul className="space-y-1 text-xs text-zinc-200 border-t border-white/5 pt-2.5">
         {order.items.map((it, idx) => (
           <li key={idx} className="flex justify-between gap-2">
@@ -289,6 +317,13 @@ export function GerenciaModule() {
           </li>
         ))}
       </ul>
+
+      {order.pagoMovilDetails && (
+        <div className="text-[11px] text-zinc-300 bg-zinc-900/90 rounded-lg px-2.5 py-1.5 border border-white/5 font-mono tabular-nums">
+          {order.pagoMovilDetails.bank} · Monto: {formatCurrency(order.pagoMovilDetails.amount)} · Ref:{' '}
+          <strong className="text-amber-400">{order.pagoMovilDetails.referenceLast6}</strong>
+        </div>
+      )}
 
       <div className="flex items-center justify-between pt-2.5 border-t border-white/10 text-xs">
         <div className="text-zinc-400">
@@ -446,7 +481,185 @@ export function GerenciaModule() {
         </div>
 
         <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-6 space-y-6">
-          {/* 1. CONTROL DE PEDIDOS (LIVE DASHBOARD / KANBAN) */}
+          {/* 1. CAJA PRINCIPAL (CIERRE DE DÍA Y CAMPOS PAGO MÓVIL) */}
+          {activeTab === 'caja' && (
+            <section className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h1 className="font-display text-2xl font-bold text-white">
+                    Caja Principal & Cierre de Día
+                  </h1>
+                  <p className="text-sm text-zinc-400 mt-1">
+                    Registro en tiempo real de pedidos facturados, verificación de Pago Móvil y desglose por métodos de pago
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={performCashClosure}
+                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 text-white text-sm font-bold shadow-lg cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <Receipt className="w-4 h-4" />
+                  <span>Realizar Cierre de Caja</span>
+                </button>
+              </div>
+
+              {/* Financial Summary Strip */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="rounded-2xl bg-zinc-900/90 border border-amber-500/35 p-5">
+                  <p className="text-xs text-zinc-400">Total Ventas del Turno</p>
+                  <p className="font-mono text-3xl font-bold text-amber-400 mt-1 tabular-nums">
+                    {formatCurrency(openShiftTotal)}
+                  </p>
+                  <p className="text-xs text-zinc-400 mt-1 tabular-nums">
+                    {openShiftOrders.length} pedidos válidos abiertos
+                  </p>
+                </div>
+
+                {Object.entries(salesByMethod).map(([methodName, data]) => (
+                  <div
+                    key={methodName}
+                    className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5"
+                  >
+                    <p className="text-xs text-zinc-400 truncate">{methodName}</p>
+                    <p className="font-mono text-2xl font-bold text-white mt-1 tabular-nums">
+                      {formatCurrency(data.total)}
+                    </p>
+                    <p className="text-xs text-zinc-500 mt-1 tabular-nums">
+                      {data.count} {data.count === 1 ? 'transacción' : 'transacciones'}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Live Billed Orders Table with Pago Móvil Details */}
+              <div className="rounded-2xl bg-zinc-900/70 border border-white/10 overflow-hidden">
+                <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
+                  <div>
+                    <h2 className="font-display text-base font-bold text-white">
+                      Pedidos Facturados del Turno Actual
+                    </h2>
+                    <p className="text-xs text-zinc-400 mt-0.5">
+                      Incluye desglose de Banco, Monto y Referencia (6 últimos dígitos) en pagos vía Pago Móvil
+                    </p>
+                  </div>
+                  <span className="font-mono text-xs text-zinc-400 tabular-nums">
+                    {openShiftOrders.length} registros
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs sm:text-sm">
+                    <thead className="bg-zinc-950/80 text-zinc-400 border-b border-white/10">
+                      <tr>
+                        <th className="py-3 px-4 font-semibold">Código</th>
+                        <th className="py-3 px-4 font-semibold">Hora</th>
+                        <th className="py-3 px-4 font-semibold">Modalidad</th>
+                        <th className="py-3 px-4 font-semibold">Método de Pago</th>
+                        <th className="py-3 px-4 font-semibold">
+                          Datos Pago Móvil (Banco / Monto / Ref 6 dígitos)
+                        </th>
+                        <th className="py-3 px-4 font-semibold">Estado</th>
+                        <th className="py-3 px-4 font-semibold text-right">Monto Orden</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {openShiftOrders.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="py-8 text-center text-zinc-500">
+                            No hay pedidos abiertos pendientes por cerrar.
+                          </td>
+                        </tr>
+                      ) : (
+                        openShiftOrders.map((ord) => (
+                          <tr key={ord.id} className="hover:bg-white/[0.02]">
+                            <td className="py-3 px-4 font-mono font-bold text-white tabular-nums">
+                              {ord.code}
+                            </td>
+                            <td className="py-3 px-4 font-mono text-zinc-400 tabular-nums">
+                              {formatTime(ord.createdAt)}
+                            </td>
+                            <td className="py-3 px-4 text-zinc-200">
+                              {modalityLabel(ord.modality, ord.tableNumber)}
+                            </td>
+                            <td className="py-3 px-4 text-zinc-200 font-medium">
+                              {ord.paymentMethodName}
+                            </td>
+                            <td className="py-3 px-4">
+                              {ord.pagoMovilDetails ? (
+                                <div className="inline-flex flex-wrap items-center gap-2 text-xs font-mono tabular-nums text-zinc-200 bg-zinc-950/90 border border-amber-500/25 rounded-lg px-2.5 py-1">
+                                  <span>
+                                    <span className="text-zinc-400 font-sans">Banco:</span>{' '}
+                                    {ord.pagoMovilDetails.bank}
+                                  </span>
+                                  <span className="text-zinc-600">·</span>
+                                  <span>
+                                    <span className="text-zinc-400 font-sans">Monto:</span>{' '}
+                                    <strong className="text-emerald-400">
+                                      {formatCurrency(ord.pagoMovilDetails.amount)}
+                                    </strong>
+                                  </span>
+                                  <span className="text-zinc-600">·</span>
+                                  <span>
+                                    <span className="text-zinc-400 font-sans">Ref:</span>{' '}
+                                    <strong className="text-amber-400">
+                                      #{ord.pagoMovilDetails.referenceLast6}
+                                    </strong>
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="text-xs text-zinc-500">—</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4">
+                              <OrderStatusText status={ord.status} />
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono font-bold text-amber-400 tabular-nums">
+                              {formatCurrency(ord.total)}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Historical Closures */}
+              {closures.length > 0 && (
+                <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5 space-y-3">
+                  <h2 className="font-display text-base font-bold text-white">
+                    Historial de Cierres de Caja
+                  </h2>
+                  <div className="space-y-3">
+                    {closures.map((c) => (
+                      <div
+                        key={c.id}
+                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold text-white">
+                            Cierre del {new Date(c.closedAt).toLocaleString('es-VE')}
+                          </p>
+                          <p className="text-xs text-zinc-400 mt-1">
+                            {c.orderCount} pedidos ·{' '}
+                            {Object.entries(c.byMethod)
+                              .map(([m, amt]) => `${m}: ${formatCurrency(amt)}`)
+                              .join(' · ')}
+                          </p>
+                        </div>
+                        <span className="font-mono text-xl font-bold text-emerald-400 tabular-nums shrink-0">
+                          {formatCurrency(c.totalSales)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* 2. CONTROL DE PEDIDOS (LIVE DASHBOARD / KANBAN) */}
           {activeTab === 'pedidos' && (
             <section className="space-y-6">
               <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
@@ -547,7 +760,331 @@ export function GerenciaModule() {
             </section>
           )}
 
-          {/* 2. CARGA DE MENÚ Y PRECIOS (CRUD) */}
+          {/* 3. COCINA (VISTA GERENCIAL ESPEJO) */}
+          {activeTab === 'cocina' && (
+            <section className="space-y-6">
+              <div>
+                <h1 className="font-display text-2xl font-bold text-white">
+                  Supervisión de Cocina (Espejo en Vivo)
+                </h1>
+                <p className="text-sm text-zinc-400 mt-1">
+                  Estado en tiempo real de las comandas en proceso y finalizadas en el tablero KDS
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5 space-y-3">
+                  <h2 className="font-display text-base font-bold text-red-400 pb-2 border-b border-white/10">
+                    Platos en Cola / Preparación ({pendingOrders.length + cookingOrders.length})
+                  </h2>
+                  {[...pendingOrders, ...cookingOrders].length === 0 ? (
+                    <p className="text-sm text-zinc-500 py-8 text-center">
+                      Cocina sin comandas activas.
+                    </p>
+                  ) : (
+                    [...pendingOrders, ...cookingOrders].map((ord) => (
+                      <div
+                        key={ord.id}
+                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 space-y-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-sm font-bold text-white tabular-nums">
+                            {ord.code} · {modalityLabel(ord.modality, ord.tableNumber)}
+                          </span>
+                          <div className="flex items-center gap-3">
+                            <span className="font-mono text-xs text-zinc-400 tabular-nums">
+                              {formatElapsedMinutes(ord.createdAt)}
+                            </span>
+                            <OrderStatusText status={ord.status} />
+                          </div>
+                        </div>
+                        {ord.isModifiedAfterConfirm && (
+                          <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-2.5 py-1">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                            <span>
+                              Modificado tras confirmar:{' '}
+                              {ord.modificationSummary ?? 'Revisar comanda'}
+                            </span>
+                          </div>
+                        )}
+                        <ul className="text-xs text-zinc-200 space-y-1">
+                          {ord.items.map((it, idx) => (
+                            <li key={idx}>
+                              <strong className="font-mono text-amber-400">{it.quantity}x</strong>{' '}
+                              {it.name}
+                              {it.notes ? ` (${it.notes})` : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5 space-y-3">
+                  <h2 className="font-display text-base font-bold text-emerald-400 pb-2 border-b border-white/10">
+                    Platos Finalizados en Cocina ({servedOrReadyOrders.length})
+                  </h2>
+                  {servedOrReadyOrders.length === 0 ? (
+                    <p className="text-sm text-zinc-500 py-8 text-center">
+                      Sin platos finalizados aún.
+                    </p>
+                  ) : (
+                    servedOrReadyOrders.map((ord) => (
+                      <div
+                        key={ord.id}
+                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 flex items-center justify-between gap-3"
+                      >
+                        <div>
+                          <span className="font-mono text-sm font-bold text-white tabular-nums">
+                            {ord.code}
+                          </span>
+                          <span className="text-xs text-zinc-400 ml-2">
+                            {modalityLabel(ord.modality, ord.tableNumber)} · {ord.items.length} ítems
+                          </span>
+                        </div>
+                        <OrderStatusText status={ord.status} />
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* 4. DELIVERY (CON REGISTRO DE CONDUCTORES Y MODAL DE DESPACHO) */}
+          {activeTab === 'delivery' && (
+            <section className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h1 className="font-display text-2xl font-bold text-white">
+                    Gestión de Delivery y Conductores
+                  </h1>
+                  <p className="text-sm text-zinc-400 mt-1">
+                    Registra conductores, asigna pedidos y envía notificaciones automáticas al chofer y al cliente
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setAddDriverModalOpen(true)}
+                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 text-white text-sm font-bold shadow-lg cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span>Agregar Conductor</span>
+                </button>
+              </div>
+
+              {/* Registered Drivers Strip */}
+              <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="font-display text-sm font-bold text-zinc-200">
+                    Conductores Registrados ({drivers.length})
+                  </h2>
+                </div>
+                {drivers.length === 0 ? (
+                  <p className="text-xs text-zinc-500 py-4 text-center">
+                    No hay conductores registrados. Usa el botón &ldquo;Agregar Conductor&rdquo; para añadir motorizados.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {drivers.map((drv) => (
+                      <div
+                        key={drv.id}
+                        className="rounded-xl bg-zinc-950 border border-white/10 p-3.5 flex items-start justify-between gap-3"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-display text-sm font-bold text-white truncate">
+                              {drv.name}
+                            </span>
+                            <span className="text-[11px] font-mono text-amber-400">
+                              · {drv.vehicleType}
+                            </span>
+                          </div>
+                          <p className="text-xs font-mono text-zinc-300 mt-1 tabular-nums">
+                            {drv.idNumber} · Tel: {drv.phone}
+                          </p>
+                          <p className="text-[11px] text-zinc-400 mt-0.5 truncate">
+                            {drv.vehiclePlate}
+                            {drv.zone ? ` · ${drv.zone}` : ''}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => deleteDriver(drv.id)}
+                          className="p-1.5 rounded-lg bg-zinc-900 hover:bg-red-950/60 border border-white/10 text-zinc-400 hover:text-red-400 cursor-pointer shrink-0"
+                          title="Eliminar conductor"
+                          aria-label={`Eliminar conductor ${drv.name}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                {/* Pendientes por enviar */}
+                <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5 space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                    <h2 className="font-display text-base font-bold text-amber-400">
+                      Pendientes por Enviar ({deliveryPending.length})
+                    </h2>
+                  </div>
+                  {deliveryPending.length === 0 ? (
+                    <p className="text-sm text-zinc-500 py-8 text-center">
+                      No hay pedidos de delivery pendientes por despachar.
+                    </p>
+                  ) : (
+                    deliveryPending.map((ord) => (
+                      <div
+                        key={ord.id}
+                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 space-y-3"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <span className="font-mono text-base font-bold text-white tabular-nums">
+                              {ord.code}
+                            </span>
+                            <span className="text-zinc-500 mx-2">·</span>
+                            <span className="text-sm font-semibold text-white">
+                              {ord.customerName ?? 'Cliente Delivery'}
+                            </span>
+                            <p className="text-xs text-zinc-400 mt-0.5">
+                              Tel: {ord.customerPhone ?? 'N/D'} · {ord.deliveryAddress ?? 'Sin dirección'}
+                            </p>
+                          </div>
+                          <OrderStatusText status={ord.status} />
+                        </div>
+
+                        <div className="text-xs text-zinc-300 space-y-1">
+                          {ord.items.map((it, idx) => (
+                            <p key={idx}>
+                              <strong className="font-mono text-amber-400">{it.quantity}x</strong>{' '}
+                              {it.name}
+                            </p>
+                          ))}
+                        </div>
+
+                        {ord.pagoMovilDetails && (
+                          <div className="text-xs font-mono text-zinc-300 bg-zinc-900 rounded-lg px-2.5 py-1.5 border border-white/5 tabular-nums">
+                            Pago Móvil: {ord.pagoMovilDetails.bank} ·{' '}
+                            {formatCurrency(ord.pagoMovilDetails.amount)} · Ref:{' '}
+                            <strong className="text-amber-400">
+                              #{ord.pagoMovilDetails.referenceLast6}
+                            </strong>
+                          </div>
+                        )}
+
+                        {ord.paymentProofName && (
+                          <div className="inline-flex items-center gap-1.5 text-xs text-emerald-300">
+                            <FileCheck2 className="w-3.5 h-3.5" />
+                            <span>Comprobante: {ord.paymentProofName}</span>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                          <span className="font-mono text-sm font-bold text-white tabular-nums">
+                            {formatCurrency(ord.total)} · {ord.paymentMethodName}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setDispatchingOrder(ord)}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold shadow-md cursor-pointer"
+                          >
+                            <Truck className="w-3.5 h-3.5" />
+                            <span>Despachar Pedido</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Despachados */}
+                <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5 space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                    <h2 className="font-display text-base font-bold text-sky-400">
+                      Pedidos Despachados ({deliveryDispatched.length})
+                    </h2>
+                  </div>
+                  {deliveryDispatched.length === 0 ? (
+                    <p className="text-sm text-zinc-500 py-8 text-center">
+                      No hay envíos en camino o entregados todavía.
+                    </p>
+                  ) : (
+                    deliveryDispatched.map((ord) => (
+                      <div
+                        key={ord.id}
+                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 space-y-2.5"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <span className="font-mono text-base font-bold text-white tabular-nums">
+                              {ord.code}
+                            </span>
+                            <span className="text-zinc-500 mx-2">·</span>
+                            <span className="text-sm font-semibold text-white">
+                              {ord.customerName ?? 'Cliente Delivery'}
+                            </span>
+                            <p className="text-xs text-zinc-400 mt-0.5">
+                              Tel Cliente: {ord.customerPhone ?? 'N/D'} · {ord.deliveryAddress}
+                            </p>
+                          </div>
+                          <OrderStatusText status={ord.status} />
+                        </div>
+
+                        {ord.assignedDriverName && (
+                          <div className="rounded-lg bg-zinc-900/90 border border-white/10 px-3 py-2 text-xs text-zinc-300 flex flex-wrap items-center justify-between gap-2">
+                            <span>
+                              <strong className="text-amber-400">Chofer:</strong>{' '}
+                              {ord.assignedDriverName} ({ord.assignedDriverVehicle})
+                            </span>
+                            <span className="font-mono text-zinc-400 tabular-nums">
+                              <Phone className="w-3 h-3 inline mr-1" />
+                              {ord.assignedDriverPhone}
+                            </span>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                          <span className="font-mono text-xs text-zinc-300 tabular-nums">
+                            {formatCurrency(ord.total)} · {formatTime(ord.updatedAt)}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setDispatchingOrder(ord)}
+                              className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-xs text-amber-400 font-semibold cursor-pointer"
+                            >
+                              Reenviar Avisos
+                            </button>
+                            {ord.status === 'en_camino' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateOrderStatus(ord.id, 'servido');
+                                  showToast(`Delivery ${ord.code} entregado.`, 'success');
+                                }}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>Confirmar Entrega</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* 5. CARGA DE MENÚ Y PRECIOS (CRUD) */}
           {activeTab === 'menu' && (
             <section className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
               {/* CRUD Form */}
@@ -743,7 +1280,111 @@ export function GerenciaModule() {
             </section>
           )}
 
-          {/* 3. GESTIÓN DE MÉTODOS DE PAGO */}
+          {/* 6. MÓDULO CLIENTES & WHATSAPP */}
+          {activeTab === 'whatsapp' && (
+            <section className="max-w-3xl space-y-6">
+              <div>
+                <h1 className="font-display text-2xl font-bold text-white">
+                  Clientes & Enlace Directo por WhatsApp
+                </h1>
+                <p className="text-sm text-zinc-400 mt-1">
+                  Comparte el Menú Público para que el cliente seleccione productos, pague y adjunte su comprobante
+                </p>
+              </div>
+
+              <div className="rounded-2xl bg-zinc-900/80 border border-white/10 p-6 space-y-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                      Número WhatsApp del Cliente (opcional)
+                    </label>
+                    <input
+                      type="tel"
+                      value={waPhone}
+                      onChange={(e) => setWaPhone(e.target.value)}
+                      placeholder="Ej. 584145558910"
+                      className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3.5 py-2.5 text-sm font-mono text-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                      Mesa Preseleccionada (opcional)
+                    </label>
+                    <select
+                      value={waTable ?? ''}
+                      onChange={(e) =>
+                        setWaTable(e.target.value ? Number(e.target.value) : undefined)
+                      }
+                      className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3.5 py-2.5 text-sm text-white"
+                    >
+                      <option value="">General (Delivery o elegir mesa)</option>
+                      {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                        <option key={m} value={m}>
+                          Mesa {m}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                    Mensaje de invitación
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={waMessage}
+                    onChange={(e) => setWaMessage(e.target.value)}
+                    className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3.5 py-2.5 text-sm text-white"
+                  />
+                </div>
+
+                <div>
+                  <span className="block text-xs font-medium text-zinc-400 mb-1.5">
+                    Enlace generado del Menú Público
+                  </span>
+                  <div className="rounded-xl bg-zinc-950 border border-white/10 p-3 font-mono text-xs text-amber-300 break-all">
+                    {generatedPublicUrl}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 pt-1">
+                  <a
+                    href={waShareHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold shadow-lg"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    <span>Compartir vía WhatsApp</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={handleCopyPublicUrl}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-semibold cursor-pointer"
+                  >
+                    {copiedUrl ? (
+                      <Check className="w-4 h-4 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-4 h-4" />
+                    )}
+                    <span>{copiedUrl ? 'Enlace Copiado' : 'Copiar Enlace'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigateToModule('menu_publico')}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-950 border border-white/15 hover:border-amber-500/50 text-amber-400 text-sm font-semibold cursor-pointer"
+                  >
+                    <Share2 className="w-4 h-4" />
+                    <span>Abrir Menú Público Aquí</span>
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* 7. GESTIÓN DE MÉTODOS DE PAGO */}
           {activeTab === 'pagos' && (
             <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
               <div className="lg:col-span-7 space-y-4">
@@ -884,476 +1525,6 @@ export function GerenciaModule() {
               </div>
             </section>
           )}
-
-          {/* 4. MÓDULO CLIENTES & WHATSAPP */}
-          {activeTab === 'whatsapp' && (
-            <section className="max-w-3xl space-y-6">
-              <div>
-                <h1 className="font-display text-2xl font-bold text-white">
-                  Clientes & Enlace Directo por WhatsApp
-                </h1>
-                <p className="text-sm text-zinc-400 mt-1">
-                  Comparte el Menú Público para que el cliente seleccione productos, pague y adjunte su comprobante
-                </p>
-              </div>
-
-              <div className="rounded-2xl bg-zinc-900/80 border border-white/10 p-6 space-y-5">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-medium text-zinc-300 mb-1.5">
-                      Número WhatsApp del Cliente (opcional)
-                    </label>
-                    <input
-                      type="tel"
-                      value={waPhone}
-                      onChange={(e) => setWaPhone(e.target.value)}
-                      placeholder="Ej. 584145558910"
-                      className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3.5 py-2.5 text-sm font-mono text-white"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-medium text-zinc-300 mb-1.5">
-                      Mesa Preseleccionada (opcional)
-                    </label>
-                    <select
-                      value={waTable ?? ''}
-                      onChange={(e) =>
-                        setWaTable(e.target.value ? Number(e.target.value) : undefined)
-                      }
-                      className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3.5 py-2.5 text-sm text-white"
-                    >
-                      <option value="">General (Delivery o elegir mesa)</option>
-                      {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                        <option key={m} value={m}>
-                          Mesa {m}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-zinc-300 mb-1.5">
-                    Mensaje de invitación
-                  </label>
-                  <textarea
-                    rows={3}
-                    value={waMessage}
-                    onChange={(e) => setWaMessage(e.target.value)}
-                    className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3.5 py-2.5 text-sm text-white"
-                  />
-                </div>
-
-                <div>
-                  <span className="block text-xs font-medium text-zinc-400 mb-1.5">
-                    Enlace generado del Menú Público
-                  </span>
-                  <div className="rounded-xl bg-zinc-950 border border-white/10 p-3 font-mono text-xs text-amber-300 break-all">
-                    {generatedPublicUrl}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-3 pt-1">
-                  <button
-                    type="button"
-                    onClick={handleSendWhatsApp}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold shadow-lg cursor-pointer"
-                  >
-                    <MessageCircle className="w-4 h-4" />
-                    <span>Compartir vía WhatsApp</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleCopyPublicUrl}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-semibold cursor-pointer"
-                  >
-                    {copiedUrl ? (
-                      <Check className="w-4 h-4 text-emerald-400" />
-                    ) : (
-                      <Copy className="w-4 h-4" />
-                    )}
-                    <span>{copiedUrl ? 'Enlace Copiado' : 'Copiar Enlace'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => navigateToModule('menu_publico')}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-950 border border-white/15 hover:border-amber-500/50 text-amber-400 text-sm font-semibold cursor-pointer"
-                  >
-                    <Share2 className="w-4 h-4" />
-                    <span>Abrir Menú Público Aquí</span>
-                  </button>
-                </div>
-              </div>
-            </section>
-          )}
-
-          {/* 5. DELIVERY */}
-          {activeTab === 'delivery' && (
-            <section className="space-y-6">
-              <div>
-                <h1 className="font-display text-2xl font-bold text-white">
-                  Gestión de Delivery
-                </h1>
-                <p className="text-sm text-zinc-400 mt-1">
-                  Visualización en tiempo real de pedidos pendientes por enviar y despachados
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-                {/* Pendientes por enviar */}
-                <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5 space-y-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-white/10">
-                    <h2 className="font-display text-base font-bold text-amber-400">
-                      Pendientes por Enviar ({deliveryPending.length})
-                    </h2>
-                  </div>
-                  {deliveryPending.length === 0 ? (
-                    <p className="text-sm text-zinc-500 py-8 text-center">
-                      No hay pedidos de delivery pendientes por despachar.
-                    </p>
-                  ) : (
-                    deliveryPending.map((ord) => (
-                      <div
-                        key={ord.id}
-                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 space-y-3"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <span className="font-mono text-base font-bold text-white tabular-nums">
-                              {ord.code}
-                            </span>
-                            <span className="text-zinc-500 mx-2">·</span>
-                            <span className="text-sm font-semibold text-white">
-                              {ord.customerName ?? 'Cliente Delivery'}
-                            </span>
-                            <p className="text-xs text-zinc-400 mt-0.5">
-                              Tel: {ord.customerPhone ?? 'N/D'} · {ord.deliveryAddress ?? 'Sin dirección'}
-                            </p>
-                          </div>
-                          <OrderStatusText status={ord.status} />
-                        </div>
-
-                        <div className="text-xs text-zinc-300 space-y-1">
-                          {ord.items.map((it, idx) => (
-                            <p key={idx}>
-                              <strong className="font-mono text-amber-400">{it.quantity}x</strong>{' '}
-                              {it.name}
-                            </p>
-                          ))}
-                        </div>
-
-                        {ord.paymentProofName && (
-                          <div className="inline-flex items-center gap-1.5 text-xs text-emerald-300">
-                            <FileCheck2 className="w-3.5 h-3.5" />
-                            <span>Comprobante: {ord.paymentProofName}</span>
-                          </div>
-                        )}
-
-                        <div className="flex items-center justify-between pt-2 border-t border-white/10">
-                          <span className="font-mono text-sm font-bold text-white tabular-nums">
-                            {formatCurrency(ord.total)} · {ord.paymentMethodName}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              updateOrderStatus(ord.id, 'en_camino');
-                              showToast(`Delivery ${ord.code} despachado.`, 'success');
-                            }}
-                            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold cursor-pointer"
-                          >
-                            <Truck className="w-3.5 h-3.5" />
-                            <span>Despachar Pedido</span>
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                {/* Despachados */}
-                <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5 space-y-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-white/10">
-                    <h2 className="font-display text-base font-bold text-sky-400">
-                      Pedidos Despachados ({deliveryDispatched.length})
-                    </h2>
-                  </div>
-                  {deliveryDispatched.length === 0 ? (
-                    <p className="text-sm text-zinc-500 py-8 text-center">
-                      No hay envíos en camino o entregados todavía.
-                    </p>
-                  ) : (
-                    deliveryDispatched.map((ord) => (
-                      <div
-                        key={ord.id}
-                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 space-y-2.5"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <span className="font-mono text-base font-bold text-white tabular-nums">
-                              {ord.code}
-                            </span>
-                            <span className="text-zinc-500 mx-2">·</span>
-                            <span className="text-sm font-semibold text-white">
-                              {ord.customerName ?? 'Cliente Delivery'}
-                            </span>
-                            <p className="text-xs text-zinc-400 mt-0.5">
-                              {ord.deliveryAddress}
-                            </p>
-                          </div>
-                          <OrderStatusText status={ord.status} />
-                        </div>
-
-                        <div className="flex items-center justify-between pt-2 border-t border-white/10">
-                          <span className="font-mono text-xs text-zinc-300 tabular-nums">
-                            {formatCurrency(ord.total)} · {formatTime(ord.updatedAt)}
-                          </span>
-                          {ord.status === 'en_camino' && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                updateOrderStatus(ord.id, 'servido');
-                                showToast(`Delivery ${ord.code} entregado.`, 'success');
-                              }}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
-                            >
-                              <CheckCircle2 className="w-3.5 h-3.5" />
-                              <span>Confirmar Entrega</span>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </section>
-          )}
-
-          {/* 6. COCINA (VISTA GERENCIAL ESPEJO) */}
-          {activeTab === 'cocina' && (
-            <section className="space-y-6">
-              <div>
-                <h1 className="font-display text-2xl font-bold text-white">
-                  Supervisión de Cocina (Espejo en Vivo)
-                </h1>
-                <p className="text-sm text-zinc-400 mt-1">
-                  Estado en tiempo real de las comandas en proceso y finalizadas en el tablero KDS
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5 space-y-3">
-                  <h2 className="font-display text-base font-bold text-red-400 pb-2 border-b border-white/10">
-                    Platos en Cola / Preparación ({pendingOrders.length + cookingOrders.length})
-                  </h2>
-                  {[...pendingOrders, ...cookingOrders].length === 0 ? (
-                    <p className="text-sm text-zinc-500 py-8 text-center">
-                      Cocina sin comandas activas.
-                    </p>
-                  ) : (
-                    [...pendingOrders, ...cookingOrders].map((ord) => (
-                      <div
-                        key={ord.id}
-                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 space-y-2"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-mono text-sm font-bold text-white tabular-nums">
-                            {ord.code} · {modalityLabel(ord.modality, ord.tableNumber)}
-                          </span>
-                          <div className="flex items-center gap-3">
-                            <span className="font-mono text-xs text-zinc-400 tabular-nums">
-                              {formatElapsedMinutes(ord.createdAt)}
-                            </span>
-                            <OrderStatusText status={ord.status} />
-                          </div>
-                        </div>
-                        <ul className="text-xs text-zinc-200 space-y-1">
-                          {ord.items.map((it, idx) => (
-                            <li key={idx}>
-                              <strong className="font-mono text-amber-400">{it.quantity}x</strong>{' '}
-                              {it.name}
-                              {it.notes ? ` (${it.notes})` : ''}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5 space-y-3">
-                  <h2 className="font-display text-base font-bold text-emerald-400 pb-2 border-b border-white/10">
-                    Platos Finalizados en Cocina ({servedOrReadyOrders.length})
-                  </h2>
-                  {servedOrReadyOrders.length === 0 ? (
-                    <p className="text-sm text-zinc-500 py-8 text-center">
-                      Sin platos finalizados aún.
-                    </p>
-                  ) : (
-                    servedOrReadyOrders.map((ord) => (
-                      <div
-                        key={ord.id}
-                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 flex items-center justify-between gap-3"
-                      >
-                        <div>
-                          <span className="font-mono text-sm font-bold text-white tabular-nums">
-                            {ord.code}
-                          </span>
-                          <span className="text-xs text-zinc-400 ml-2">
-                            {modalityLabel(ord.modality, ord.tableNumber)} · {ord.items.length} ítems
-                          </span>
-                        </div>
-                        <OrderStatusText status={ord.status} />
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </section>
-          )}
-
-          {/* 7. CAJA PRINCIPAL (CIERRE DE DÍA) */}
-          {activeTab === 'caja' && (
-            <section className="space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div>
-                  <h1 className="font-display text-2xl font-bold text-white">
-                    Caja Principal & Cierre de Día
-                  </h1>
-                  <p className="text-sm text-zinc-400 mt-1">
-                    Registro en tiempo real de pedidos facturados y desglose por métodos de pago
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={performCashClosure}
-                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 text-white text-sm font-bold shadow-lg cursor-pointer whitespace-nowrap shrink-0"
-                >
-                  <Receipt className="w-4 h-4" />
-                  <span>Realizar Cierre de Caja</span>
-                </button>
-              </div>
-
-              {/* Financial Summary Strip */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="rounded-2xl bg-zinc-900/90 border border-amber-500/35 p-5">
-                  <p className="text-xs text-zinc-400">Total Ventas del Turno</p>
-                  <p className="font-mono text-3xl font-bold text-amber-400 mt-1 tabular-nums">
-                    {formatCurrency(openShiftTotal)}
-                  </p>
-                  <p className="text-xs text-zinc-400 mt-1 tabular-nums">
-                    {openShiftOrders.length} pedidos válidos abiertos
-                  </p>
-                </div>
-
-                {Object.entries(salesByMethod).map(([methodName, data]) => (
-                  <div
-                    key={methodName}
-                    className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5"
-                  >
-                    <p className="text-xs text-zinc-400 truncate">{methodName}</p>
-                    <p className="font-mono text-2xl font-bold text-white mt-1 tabular-nums">
-                      {formatCurrency(data.total)}
-                    </p>
-                    <p className="text-xs text-zinc-500 mt-1 tabular-nums">
-                      {data.count} {data.count === 1 ? 'transacción' : 'transacciones'}
-                    </p>
-                  </div>
-                ))}
-              </div>
-
-              {/* Live Billed Orders Table */}
-              <div className="rounded-2xl bg-zinc-900/70 border border-white/10 overflow-hidden">
-                <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
-                  <h2 className="font-display text-base font-bold text-white">
-                    Pedidos Facturados del Turno Actual
-                  </h2>
-                  <span className="font-mono text-xs text-zinc-400 tabular-nums">
-                    {openShiftOrders.length} registros
-                  </span>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs sm:text-sm">
-                    <thead className="bg-zinc-950/80 text-zinc-400 border-b border-white/10">
-                      <tr>
-                        <th className="py-3 px-4 font-semibold">Código</th>
-                        <th className="py-3 px-4 font-semibold">Hora</th>
-                        <th className="py-3 px-4 font-semibold">Modalidad</th>
-                        <th className="py-3 px-4 font-semibold">Método de Pago</th>
-                        <th className="py-3 px-4 font-semibold">Estado</th>
-                        <th className="py-3 px-4 font-semibold text-right">Monto</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5">
-                      {openShiftOrders.length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="py-8 text-center text-zinc-500">
-                            No hay pedidos abiertos pendientes por cerrar.
-                          </td>
-                        </tr>
-                      ) : (
-                        openShiftOrders.map((ord) => (
-                          <tr key={ord.id} className="hover:bg-white/[0.02]">
-                            <td className="py-3 px-4 font-mono font-bold text-white tabular-nums">
-                              {ord.code}
-                            </td>
-                            <td className="py-3 px-4 font-mono text-zinc-400 tabular-nums">
-                              {formatTime(ord.createdAt)}
-                            </td>
-                            <td className="py-3 px-4 text-zinc-200">
-                              {modalityLabel(ord.modality, ord.tableNumber)}
-                            </td>
-                            <td className="py-3 px-4 text-zinc-300">{ord.paymentMethodName}</td>
-                            <td className="py-3 px-4">
-                              <OrderStatusText status={ord.status} />
-                            </td>
-                            <td className="py-3 px-4 text-right font-mono font-bold text-amber-400 tabular-nums">
-                              {formatCurrency(ord.total)}
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Historical Closures */}
-              {closures.length > 0 && (
-                <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5 space-y-3">
-                  <h2 className="font-display text-base font-bold text-white">
-                    Historial de Cierres de Caja
-                  </h2>
-                  <div className="space-y-3">
-                    {closures.map((c) => (
-                      <div
-                        key={c.id}
-                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                      >
-                        <div>
-                          <p className="text-sm font-semibold text-white">
-                            Cierre del {new Date(c.closedAt).toLocaleString('es-VE')}
-                          </p>
-                          <p className="text-xs text-zinc-400 mt-1">
-                            {c.orderCount} pedidos ·{' '}
-                            {Object.entries(c.byMethod)
-                              .map(([m, amt]) => `${m}: ${formatCurrency(amt)}`)
-                              .join(' · ')}
-                          </p>
-                        </div>
-                        <span className="font-mono text-xl font-bold text-emerald-400 tabular-nums shrink-0">
-                          {formatCurrency(c.totalSales)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </section>
-          )}
         </main>
       </div>
 
@@ -1363,6 +1534,16 @@ export function GerenciaModule() {
       )}
       {editingOrder && (
         <EditOrderModal order={editingOrder} onClose={() => setEditingOrder(null)} />
+      )}
+      {addDriverModalOpen && (
+        <AddDriverModal onClose={() => setAddDriverModalOpen(false)} />
+      )}
+      {dispatchingOrder && (
+        <DispatchDeliveryModal
+          order={dispatchingOrder}
+          onClose={() => setDispatchingOrder(null)}
+          onOpenAddDriver={() => setAddDriverModalOpen(true)}
+        />
       )}
     </div>
   );

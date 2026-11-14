@@ -1,10 +1,13 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Building2,
   Check,
   CheckCircle2,
   ClipboardList,
   Copy,
   CreditCard,
+  Edit3,
+  Hash,
   LogOut,
   MessageCircle,
   Minus,
@@ -16,8 +19,10 @@ import {
   Utensils,
   X,
 } from 'lucide-react';
+import { PAGO_MOVIL_BANKS } from '../data/initialData';
 import { useRestaurant } from '../context/RestaurantContext';
-import { OrderItem, Product, ProductCategory } from '../types/restaurant';
+import { Order, OrderItem, Product, ProductCategory } from '../types/restaurant';
+import { EditOrderModal, isPagoMovilMethod } from './GerenciaModals';
 import {
   BrandLogo,
   OrderStatusText,
@@ -51,6 +56,7 @@ export function MeseraModule() {
   const [selectedCategory, setSelectedCategory] = useState<'Todas' | ProductCategory>('Todas');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'carta' | 'ordenes'>('carta');
+  const [editingSalaOrder, setEditingSalaOrder] = useState<Order | null>(null);
 
   // Cart State
   const [cart, setCart] = useState<OrderItem[]>([]);
@@ -63,6 +69,12 @@ export function MeseraModule() {
   const [selectedPaymentId, setSelectedPaymentId] = useState<string>(
     () => enabledPaymentMethods[0]?.id ?? ''
   );
+
+  // Mandatory Pago Móvil Fields
+  const [pmBank, setPmBank] = useState<string>(PAGO_MOVIL_BANKS[0]);
+  const [pmAmount, setPmAmount] = useState<string>('');
+  const [pmReference6, setPmReference6] = useState<string>('');
+
   const [generalNotes, setGeneralNotes] = useState('');
   const [mobileCartOpen, setMobileCartOpen] = useState(false);
 
@@ -77,6 +89,25 @@ export function MeseraModule() {
       enabledPaymentMethods[0],
     [enabledPaymentMethods, selectedPaymentId]
   );
+
+  const isPagoMovil = useMemo(
+    () => isPagoMovilMethod(activePaymentMethod?.id, activePaymentMethod?.name),
+    [activePaymentMethod]
+  );
+
+  const cartTotal = useMemo(
+    () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
+    [cart]
+  );
+
+  // Keep Pago Móvil amount synced with cart total by default when cart changes
+  useEffect(() => {
+    if (cartTotal > 0) {
+      setPmAmount(cartTotal.toFixed(2));
+    } else {
+      setPmAmount('');
+    }
+  }, [cartTotal]);
 
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
@@ -102,11 +133,6 @@ export function MeseraModule() {
   const readyToServeCount = useMemo(
     () => activeSalaOrders.filter((o) => o.status === 'listo').length,
     [activeSalaOrders]
-  );
-
-  const cartTotal = useMemo(
-    () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
-    [cart]
   );
 
   const cartCount = useMemo(
@@ -167,6 +193,26 @@ export function MeseraModule() {
       return;
     }
 
+    if (isPagoMovil) {
+      const cleanRef = pmReference6.replace(/\D/g, '');
+      const parsedAmount = parseFloat(pmAmount);
+      if (!pmBank.trim()) {
+        showToast('Selecciona el banco del Pago Móvil.', 'error');
+        return;
+      }
+      if (Number.isNaN(parsedAmount) || parsedAmount <= 0) {
+        showToast('Ingresa un monto válido para el Pago Móvil.', 'error');
+        return;
+      }
+      if (cleanRef.length !== 6) {
+        showToast(
+          'Ingresa obligatoriamente los 6 últimos dígitos del número de referencia de Pago Móvil.',
+          'error'
+        );
+        return;
+      }
+    }
+
     const order = createOrder({
       source: 'mesera',
       modality,
@@ -178,11 +224,19 @@ export function MeseraModule() {
       total: cartTotal,
       paymentMethodId: activePaymentMethod.id,
       paymentMethodName: activePaymentMethod.name,
+      pagoMovilDetails: isPagoMovil
+        ? {
+            bank: pmBank.trim(),
+            amount: parseFloat(pmAmount),
+            referenceLast6: pmReference6.replace(/\D/g, '').slice(0, 6),
+          }
+        : undefined,
       notes: generalNotes.trim() || undefined,
     });
 
     setCart([]);
     setGeneralNotes('');
+    setPmReference6('');
     setMobileCartOpen(false);
     showToast(`Comanda ${order.code} enviada a Cocina.`, 'success');
   };
@@ -199,14 +253,11 @@ export function MeseraModule() {
     }
   };
 
-  const handleShareWhatsApp = () => {
-    const url = getPublicMenuUrl(shareTable);
-    const mesaTxt = shareTable ? ` para la Mesa ${shareTable}` : '';
-    const msg = encodeURIComponent(
-      `¡Hola! Bienvenido a Gordis Burguer. Aquí tienes nuestro menú digital${mesaTxt} para hacer tu pedido: ${url}`
-    );
-    window.open(`https://wa.me/?text=${msg}`, '_blank', 'noopener,noreferrer');
-  };
+  const shareUrl = getPublicMenuUrl(shareTable);
+  const shareMesaTxt = shareTable ? ` para la Mesa ${shareTable}` : '';
+  const shareWaHref = `https://wa.me/?text=${encodeURIComponent(
+    `¡Hola! Bienvenido a Gordis Burguer. Aquí tienes nuestro menú digital${shareMesaTxt} para hacer tu pedido: ${shareUrl}`
+  )}`;
 
   const renderCartContent = () => (
     <div className="flex flex-col h-full">
@@ -339,7 +390,7 @@ export function MeseraModule() {
         )}
       </div>
 
-      {/* Payment Method & Notes */}
+      {/* Payment Method & Mandatory Pago Móvil Fields */}
       <div className="pt-3 border-t border-white/10 space-y-3">
         <div>
           <label className="block text-xs font-medium text-zinc-400 mb-1.5">
@@ -360,6 +411,74 @@ export function MeseraModule() {
             </select>
           </div>
         </div>
+
+        {/* Mandatory Pago Móvil Fields when Pago Móvil is selected */}
+        {isPagoMovil && (
+          <div className="rounded-xl bg-zinc-950 border border-amber-500/35 p-3 space-y-2.5">
+            <p className="text-[11px] font-semibold text-amber-400">
+              Datos Obligatorios de Pago Móvil
+            </p>
+
+            <div>
+              <label className="block text-[11px] text-zinc-400 mb-1">
+                Banco Emisor *
+              </label>
+              <div className="relative">
+                <Building2 className="w-3.5 h-3.5 text-zinc-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <select
+                  value={pmBank}
+                  onChange={(e) => setPmBank(e.target.value)}
+                  className="w-full rounded-lg bg-zinc-900 border border-white/15 pl-8 pr-2.5 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                >
+                  {PAGO_MOVIL_BANKS.map((bank) => (
+                    <option key={bank} value={bank}>
+                      {bank}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-[11px] text-zinc-400 mb-1">
+                  Monto Pagado ($) *
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  value={pmAmount}
+                  onChange={(e) => setPmAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full rounded-lg bg-zinc-900 border border-white/15 px-2.5 py-2 text-xs font-mono text-white tabular-nums focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-zinc-400 mb-1">
+                  Ref. (6 últimos dígitos) *
+                </label>
+                <div className="relative">
+                  <Hash className="w-3.5 h-3.5 text-amber-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    required
+                    value={pmReference6}
+                    onChange={(e) =>
+                      setPmReference6(e.target.value.replace(/\D/g, '').slice(0, 6))
+                    }
+                    placeholder="Ej. 489821"
+                    className="w-full rounded-lg bg-zinc-900 border border-white/15 pl-7 pr-2.5 py-2 text-xs font-mono text-white tabular-nums focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <input
           type="text"
@@ -560,7 +679,7 @@ export function MeseraModule() {
                 Seguimiento de Mesas y Para Llevar
               </h1>
               <p className="text-sm text-zinc-400 mt-1">
-                Sincronización en vivo con Cocina · Marca como servido cuando entregues el pedido
+                Sincronización en vivo con Cocina · Puedes modificar una orden o marcarla como servida
               </p>
             </div>
 
@@ -611,6 +730,16 @@ export function MeseraModule() {
                           </li>
                         ))}
                       </ul>
+
+                      {order.pagoMovilDetails && (
+                        <div className="mt-3 text-xs font-mono text-zinc-300 bg-zinc-950 rounded-lg px-2.5 py-1.5 border border-white/5 tabular-nums">
+                          {order.pagoMovilDetails.bank} ·{' '}
+                          {formatCurrency(order.pagoMovilDetails.amount)} · Ref:{' '}
+                          <strong className="text-amber-400">
+                            #{order.pagoMovilDetails.referenceLast6}
+                          </strong>
+                        </div>
+                      )}
                     </div>
 
                     <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-3">
@@ -621,19 +750,30 @@ export function MeseraModule() {
                         </strong>
                       </div>
 
-                      {order.status === 'listo' && (
+                      <div className="flex items-center gap-2 shrink-0">
                         <button
                           type="button"
-                          onClick={() => {
-                            updateOrderStatus(order.id, 'servido');
-                            showToast(`Pedido ${order.code} marcado como servido.`, 'success');
-                          }}
-                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors cursor-pointer shrink-0"
+                          onClick={() => setEditingSalaOrder(order)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-amber-300 cursor-pointer"
+                          title="Modificar pedido (notifica a Cocina)"
                         >
-                          <Utensils className="w-3.5 h-3.5" />
-                          <span>Marcar Servido</span>
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>Modificar</span>
                         </button>
-                      )}
+                        {order.status === 'listo' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              updateOrderStatus(order.id, 'servido');
+                              showToast(`Pedido ${order.code} marcado como servido.`, 'success');
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors cursor-pointer"
+                          >
+                            <Utensils className="w-3.5 h-3.5" />
+                            <span>Servido</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -721,7 +861,7 @@ export function MeseraModule() {
             </div>
 
             <div className="rounded-xl bg-zinc-950 border border-white/10 p-3 font-mono text-xs text-amber-300 break-all">
-              {getPublicMenuUrl(shareTable)}
+              {shareUrl}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -733,17 +873,26 @@ export function MeseraModule() {
                 {copiedLink ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                 <span>{copiedLink ? 'Copiado' : 'Copiar Link'}</span>
               </button>
-              <button
-                type="button"
-                onClick={handleShareWhatsApp}
-                className="flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-colors cursor-pointer"
+              <a
+                href={shareWaHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-colors"
               >
                 <MessageCircle className="w-4 h-4" />
                 <span>Enviar WhatsApp</span>
-              </button>
+              </a>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Edit Order Modal from Sala */}
+      {editingSalaOrder && (
+        <EditOrderModal
+          order={editingSalaOrder}
+          onClose={() => setEditingSalaOrder(null)}
+        />
       )}
     </div>
   );

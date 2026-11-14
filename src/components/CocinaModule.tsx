@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Bell,
+  Check,
   CheckCircle2,
   ChefHat,
   Clock,
@@ -22,7 +24,13 @@ import {
 const SOUND_PREF_KEY = 'gordis_cocina_sound_enabled';
 
 export function CocinaModule() {
-  const { orders, updateOrderStatus, logout, showToast } = useRestaurant();
+  const {
+    orders,
+    updateOrderStatus,
+    acknowledgeOrderModification,
+    logout,
+    showToast,
+  } = useRestaurant();
   const [viewMode, setViewMode] = useState<'activos' | 'completados'>('activos');
   const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
     try {
@@ -46,20 +54,65 @@ export function CocinaModule() {
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   }, [orders]);
 
-  // Track order IDs already present on initial mount so only newly arriving orders chime
+  // Unacknowledged post-confirmation modifications on active kitchen orders
+  const unacknowledgedModifiedOrders = useMemo(
+    () =>
+      pendingAndPrepOrders.filter(
+        (o) => o.isModifiedAfterConfirm && !o.modificationAcknowledgedByKitchen
+      ),
+    [pendingAndPrepOrders]
+  );
+
+  // Track order IDs and modification timestamps so both new orders and modified orders trigger alerts
   const seenOrderIdsRef = useRef<Set<string> | null>(null);
+  const seenModifiedTimestampsRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     const activeIds = pendingAndPrepOrders.map((o) => o.id);
 
     if (seenOrderIdsRef.current === null) {
       seenOrderIdsRef.current = new Set(orders.map((o) => o.id));
+      const initialModMap: Record<string, string> = {};
+      orders.forEach((o) => {
+        if (o.modifiedAt) {
+          initialModMap[o.id] = o.modifiedAt;
+        }
+      });
+      seenModifiedTimestampsRef.current = initialModMap;
       return;
     }
 
+    // 1. Check for newly arrived orders
     const newlyArrived = pendingAndPrepOrders.filter(
       (o) => !seenOrderIdsRef.current!.has(o.id)
     );
+
+    // 2. Check for orders modified after confirmation
+    const newlyModified = pendingAndPrepOrders.filter((o) => {
+      if (!o.isModifiedAfterConfirm || !o.modifiedAt) return false;
+      const prevStamp = seenModifiedTimestampsRef.current[o.id];
+      return prevStamp !== o.modifiedAt;
+    });
+
+    if (newlyModified.length > 0) {
+      newlyModified.forEach((o) => {
+        if (o.modifiedAt) {
+          seenModifiedTimestampsRef.current[o.id] = o.modifiedAt;
+        }
+      });
+      const modIds = newlyModified.map((o) => o.id);
+      setHighlightedOrderIds((prev) => Array.from(new Set([...prev, ...modIds])));
+
+      const latestMod = newlyModified[newlyModified.length - 1];
+      showToast(
+        `¡ALERTA COCINA! El pedido ${latestMod.code} fue modificado después de confirmar.`,
+        'error'
+      );
+
+      if (soundEnabled) {
+        void playNewOrderChime();
+      }
+    }
 
     if (newlyArrived.length > 0) {
       newlyArrived.forEach((o) => seenOrderIdsRef.current!.add(o.id));
@@ -84,7 +137,6 @@ export function CocinaModule() {
       return () => clearTimeout(timer);
     }
 
-    // Keep ref synced with any other orders created/modified
     activeIds.forEach((id) => seenOrderIdsRef.current!.add(id));
   }, [orders, pendingAndPrepOrders, soundEnabled, showToast]);
 
@@ -238,6 +290,66 @@ export function CocinaModule() {
           </div>
         </div>
 
+        {/* High-Contrast Alert Banner for Orders Modified After Confirmation */}
+        {unacknowledgedModifiedOrders.length > 0 && (
+          <div
+            role="alert"
+            className="mb-6 rounded-2xl bg-red-950/60 border border-red-500/60 p-4 sm:p-5 shadow-xl space-y-3"
+          >
+            <div className="flex items-center gap-2.5 text-red-300">
+              <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+              <h2 className="font-display text-base sm:text-lg font-bold text-white">
+                ¡Alerta de Comanda Modificada Después de Confirmar! (
+                {unacknowledgedModifiedOrders.length})
+              </h2>
+            </div>
+
+            <div className="space-y-2">
+              {unacknowledgedModifiedOrders.map((modOrd) => (
+                <div
+                  key={modOrd.id}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl bg-zinc-950/90 border border-red-500/35 px-4 py-3"
+                >
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm font-bold text-amber-400 tabular-nums">
+                        {modOrd.code}
+                      </span>
+                      <span className="text-zinc-500">·</span>
+                      <span className="text-xs font-semibold text-white">
+                        {modalityLabel(modOrd.modality, modOrd.tableNumber)}
+                      </span>
+                      <span className="text-zinc-500">·</span>
+                      <span className="text-xs font-mono text-zinc-400 tabular-nums">
+                        Modificado a las {formatTime(modOrd.modifiedAt ?? modOrd.updatedAt)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-200">
+                      {modOrd.modificationSummary ??
+                        'Se realizaron cambios en los platos o notas de esta orden.'}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      acknowledgeOrderModification(modOrd.id);
+                      showToast(
+                        `Modificación de ${modOrd.code} confirmada en cocina.`,
+                        'info'
+                      );
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold shrink-0 cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Enterado del Cambio</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {displayedOrders.length === 0 ? (
           <div className="rounded-2xl bg-zinc-900/50 border border-white/10 p-12 text-center max-w-lg mx-auto mt-12">
             <ChefHat className="w-12 h-12 text-zinc-600 mx-auto mb-3" />
@@ -258,12 +370,16 @@ export function CocinaModule() {
               const isPreparing = order.status === 'en_cocina';
               const isReady = order.status === 'listo';
               const isNewlyArrived = highlightedOrderIds.includes(order.id);
+              const isUnacknowledgedMod =
+                order.isModifiedAfterConfirm && !order.modificationAcknowledgedByKitchen;
 
               return (
                 <article
                   key={order.id}
                   className={`flex flex-col justify-between rounded-2xl border p-5 transition-all ${
-                    isNewlyArrived
+                    isUnacknowledgedMod
+                      ? 'bg-zinc-900 border-red-500 ring-2 ring-red-500/50 shadow-xl shadow-red-950/40'
+                      : isNewlyArrived
                       ? 'bg-zinc-900 border-amber-400 ring-2 ring-amber-400/40 shadow-xl shadow-amber-950/30'
                       : isPreparing
                       ? 'bg-zinc-900/95 border-red-500/45 shadow-lg shadow-red-950/20'
@@ -273,6 +389,35 @@ export function CocinaModule() {
                   }`}
                 >
                   <div>
+                    {/* Post-confirmation Modification Alert Box inside the Card */}
+                    {order.isModifiedAfterConfirm && (
+                      <div className="mb-4 rounded-xl bg-red-500/15 border border-red-500/40 p-3 space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-300">
+                            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                            <span>PEDIDO MODIFICADO</span>
+                          </span>
+                          <span className="font-mono text-[11px] text-zinc-300 tabular-nums">
+                            {formatTime(order.modifiedAt ?? order.updatedAt)}
+                          </span>
+                        </div>
+                        <p className="text-xs text-zinc-200 leading-snug">
+                          {order.modificationSummary ??
+                            'Esta orden fue editada después de su confirmación inicial.'}
+                        </p>
+                        {!order.modificationAcknowledgedByKitchen && (
+                          <button
+                            type="button"
+                            onClick={() => acknowledgeOrderModification(order.id)}
+                            className="mt-1 w-full inline-flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold cursor-pointer"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Confirmar Lectura de Modificación</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+
                     {/* High-Contrast Banner Header */}
                     <div className="flex items-start justify-between gap-3 pb-4 border-b border-white/10">
                       <div>
