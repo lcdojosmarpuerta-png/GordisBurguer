@@ -5,6 +5,10 @@ import {
   Product,
   RoleCredentials,
 } from '../types/restaurant';
+import burgerBbqImg from '../assets/images/product_burger_bbq_1794677105743.jpg';
+import burgerClassicImg from '../assets/images/product_burger_classic_1794677105832.jpg';
+import friesLoadedImg from '../assets/images/product_fries_loaded_1794677106406.jpg';
+import hotdogGourmetImg from '../assets/images/product_hotdog_gourmet_1794677105927.jpg';
 
 export const BRAND_LOGO_URL = '/assets/aistudio/Screenshot_20261114-124540_f539c348.jpg';
 export const LOGIN_BG_URL = '/assets/aistudio/bca7550cadd5d3c0bb81abe7d2c72a36_5d945dad.jpg';
@@ -18,19 +22,19 @@ export const INITIAL_CREDENTIALS: RoleCredentials = {
 export const PRESET_PRODUCT_IMAGES: { label: string; url: string }[] = [
   {
     label: 'Hamburguesa Doble Clásica',
-    url: '/src/assets/images/product_burger_classic_1794677105832.jpg',
+    url: burgerClassicImg,
   },
   {
     label: 'Hamburguesa BBQ Crispy',
-    url: '/src/assets/images/product_burger_bbq_1794677105743.jpg',
+    url: burgerBbqImg,
   },
   {
     label: 'Perro Caliente Gourmet',
-    url: '/src/assets/images/product_hotdog_gourmet_1794677105927.jpg',
+    url: hotdogGourmetImg,
   },
   {
     label: 'Papas Fritas Cargadas',
-    url: '/src/assets/images/product_fries_loaded_1794677106406.jpg',
+    url: friesLoadedImg,
   },
 ];
 
@@ -42,7 +46,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     description:
       'Doble carne smash de res sellada a la plancha, doble queso cheddar fundido, cebolla caramelizada, lechuga fresca y salsa secreta de la casa en pan brioche tostado.',
     price: 9.5,
-    imageUrl: '/src/assets/images/product_burger_classic_1794677105832.jpg',
+    imageUrl: burgerClassicImg,
     available: true,
   },
   {
@@ -52,7 +56,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     description:
       'Medallón artesanal de 180g, tocineta ahumada crujiente, aros de cebolla dorados, queso cheddar madurado, cebolla morada y baño de salsa BBQ ahumada.',
     price: 11.0,
-    imageUrl: '/src/assets/images/product_burger_bbq_1794677105743.jpg',
+    imageUrl: burgerBbqImg,
     available: true,
   },
   {
@@ -62,7 +66,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     description:
       'Carne de res jugosa a la parrilla, queso americano, tomate fresco, pepinillos encurtidos, lechuga crujiente y aderezo tártaro artesanal.',
     price: 7.5,
-    imageUrl: '/src/assets/images/product_burger_classic_1794677105832.jpg',
+    imageUrl: burgerClassicImg,
     available: true,
   },
   {
@@ -72,7 +76,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     description:
       'Salchicha alemana premium en pan brioche dorado a la mantequilla, lluvia de tocineta crocante, cebolla caramelizada, salsa cheddar tibia y papas hilo.',
     price: 6.5,
-    imageUrl: '/src/assets/images/product_hotdog_gourmet_1794677105927.jpg',
+    imageUrl: hotdogGourmetImg,
     available: true,
   },
   {
@@ -82,7 +86,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     description:
       'Salchicha jumbo a la plancha, repollo rallado fino, maíz dulce, queso blanco rallado, papas trituradas y trío de salsas clásicas.',
     price: 5.0,
-    imageUrl: '/src/assets/images/product_hotdog_gourmet_1794677105927.jpg',
+    imageUrl: hotdogGourmetImg,
     available: true,
   },
   {
@@ -92,7 +96,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     description:
       'Porción generosa de papas fritas corte rústico bañadas en crema de queso cheddar fundido, trozos de tocineta ahumada y cebollín fresco picado.',
     price: 6.0,
-    imageUrl: '/src/assets/images/product_fries_loaded_1794677106406.jpg',
+    imageUrl: friesLoadedImg,
     available: true,
   },
   {
@@ -102,7 +106,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     description:
       'Papas crujientes doradas al punto exacto con sal marina en escamas y acompañadas de salsa tártara o kétchup de la casa.',
     price: 3.5,
-    imageUrl: '/src/assets/images/product_fries_loaded_1794677106406.jpg',
+    imageUrl: friesLoadedImg,
     available: true,
   },
 ];

@@ -1,13 +1,17 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Bell,
   CheckCircle2,
   ChefHat,
   Clock,
   Flame,
   LogOut,
   Utensils,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { useRestaurant } from '../context/RestaurantContext';
+import { playNewOrderChime, unlockKitchenAudio } from '../utils/kitchenSound';
 import {
   BrandLogo,
   formatElapsedMinutes,
@@ -15,9 +19,20 @@ import {
   modalityLabel,
 } from './SharedUI';
 
+const SOUND_PREF_KEY = 'gordis_cocina_sound_enabled';
+
 export function CocinaModule() {
   const { orders, updateOrderStatus, logout, showToast } = useRestaurant();
   const [viewMode, setViewMode] = useState<'activos' | 'completados'>('activos');
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(SOUND_PREF_KEY);
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
+  const [highlightedOrderIds, setHighlightedOrderIds] = useState<string[]>([]);
 
   const pendingAndPrepOrders = useMemo(() => {
     return orders
@@ -30,6 +45,82 @@ export function CocinaModule() {
       .filter((o) => o.status === 'listo')
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   }, [orders]);
+
+  // Track order IDs already present on initial mount so only newly arriving orders chime
+  const seenOrderIdsRef = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    const activeIds = pendingAndPrepOrders.map((o) => o.id);
+
+    if (seenOrderIdsRef.current === null) {
+      seenOrderIdsRef.current = new Set(orders.map((o) => o.id));
+      return;
+    }
+
+    const newlyArrived = pendingAndPrepOrders.filter(
+      (o) => !seenOrderIdsRef.current!.has(o.id)
+    );
+
+    if (newlyArrived.length > 0) {
+      newlyArrived.forEach((o) => seenOrderIdsRef.current!.add(o.id));
+      const newIds = newlyArrived.map((o) => o.id);
+      setHighlightedOrderIds((prev) => Array.from(new Set([...prev, ...newIds])));
+
+      const latest = newlyArrived[newlyArrived.length - 1];
+      showToast(
+        newlyArrived.length === 1
+          ? `Nueva comanda ${latest.code} recibida en cocina.`
+          : `${newlyArrived.length} nuevas comandas recibidas en cocina.`,
+        'info'
+      );
+
+      if (soundEnabled) {
+        void playNewOrderChime();
+      }
+
+      const timer = setTimeout(() => {
+        setHighlightedOrderIds((prev) => prev.filter((id) => !newIds.includes(id)));
+      }, 6000);
+      return () => clearTimeout(timer);
+    }
+
+    // Keep ref synced with any other orders created/modified
+    activeIds.forEach((id) => seenOrderIdsRef.current!.add(id));
+  }, [orders, pendingAndPrepOrders, soundEnabled, showToast]);
+
+  // Unlock browser AudioContext silently on first pointer/key interaction in kitchen view
+  useEffect(() => {
+    if (!soundEnabled) return;
+    const handleUnlock = () => {
+      void unlockKitchenAudio();
+    };
+    window.addEventListener('pointerdown', handleUnlock, { once: true });
+    window.addEventListener('keydown', handleUnlock, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', handleUnlock);
+      window.removeEventListener('keydown', handleUnlock);
+    };
+  }, [soundEnabled]);
+
+  const handleToggleSound = () => {
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    try {
+      localStorage.setItem(SOUND_PREF_KEY, String(next));
+    } catch {
+      // Ignore storage failures
+    }
+    if (next) {
+      void playNewOrderChime();
+      showToast('Aviso sonoro de cocina activado.', 'success');
+    } else {
+      showToast('Aviso sonoro de cocina silenciado.', 'info');
+    }
+  };
+
+  const handleTestSound = () => {
+    void playNewOrderChime();
+  };
 
   const displayedOrders = viewMode === 'activos' ? pendingAndPrepOrders : readyOrders;
 
@@ -86,7 +177,7 @@ export function CocinaModule() {
 
       {/* Main KDS Board */}
       <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-6">
-        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
+        <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 mb-6">
           <div>
             <h1 className="font-display text-2xl sm:text-3xl font-bold text-white tracking-tight">
               Pantalla de Cocina (KDS)
@@ -96,22 +187,54 @@ export function CocinaModule() {
             </p>
           </div>
 
-          <div className="flex items-center gap-4 text-xs sm:text-sm font-mono tabular-nums text-zinc-300">
-            <span>
-              Pendientes:{' '}
-              <strong className="text-amber-400">
-                {pendingAndPrepOrders.filter((o) => o.status === 'pendiente').length}
-              </strong>
-            </span>
-            <span aria-hidden="true" className="text-zinc-600">
-              ·
-            </span>
-            <span>
-              En preparación:{' '}
-              <strong className="text-red-400">
-                {pendingAndPrepOrders.filter((o) => o.status === 'en_cocina').length}
-              </strong>
-            </span>
+          <div className="flex flex-wrap items-center gap-4">
+            {/* Audio Notification Controls */}
+            <div className="flex items-center gap-1.5 p-1 rounded-xl bg-zinc-900 border border-white/10">
+              <button
+                type="button"
+                onClick={handleToggleSound}
+                aria-pressed={soundEnabled}
+                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  soundEnabled
+                    ? 'bg-amber-500/15 text-amber-300'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {soundEnabled ? (
+                  <Volume2 className="w-3.5 h-3.5 shrink-0" />
+                ) : (
+                  <VolumeX className="w-3.5 h-3.5 shrink-0" />
+                )}
+                <span>{soundEnabled ? 'Aviso Sonoro Activo' : 'Sonido Silenciado'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleTestSound}
+                title="Reproducir tono de prueba"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Bell className="w-3.5 h-3.5 shrink-0" />
+                <span>Probar</span>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-4 text-xs sm:text-sm font-mono tabular-nums text-zinc-300">
+              <span>
+                Pendientes:{' '}
+                <strong className="text-amber-400">
+                  {pendingAndPrepOrders.filter((o) => o.status === 'pendiente').length}
+                </strong>
+              </span>
+              <span aria-hidden="true" className="text-zinc-600">
+                ·
+              </span>
+              <span>
+                En preparación:{' '}
+                <strong className="text-red-400">
+                  {pendingAndPrepOrders.filter((o) => o.status === 'en_cocina').length}
+                </strong>
+              </span>
+            </div>
           </div>
         </div>
 
@@ -134,12 +257,15 @@ export function CocinaModule() {
             {displayedOrders.map((order) => {
               const isPreparing = order.status === 'en_cocina';
               const isReady = order.status === 'listo';
+              const isNewlyArrived = highlightedOrderIds.includes(order.id);
 
               return (
                 <article
                   key={order.id}
                   className={`flex flex-col justify-between rounded-2xl border p-5 transition-all ${
-                    isPreparing
+                    isNewlyArrived
+                      ? 'bg-zinc-900 border-amber-400 ring-2 ring-amber-400/40 shadow-xl shadow-amber-950/30'
+                      : isPreparing
                       ? 'bg-zinc-900/95 border-red-500/45 shadow-lg shadow-red-950/20'
                       : isReady
                       ? 'bg-zinc-900/70 border-emerald-500/35'
