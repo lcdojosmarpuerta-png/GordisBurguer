@@ -22,7 +22,6 @@ import { EditOrderModal } from './GerenciaModals';
 import {
   PaymentSplitDraft,
   PaymentSplitForm,
-  createInitialPaymentSplit,
   validateAndBuildPaymentSplits,
 } from './PaymentSplitForm';
 import {
@@ -77,29 +76,25 @@ export function MeseraModule() {
     [cart]
   );
 
-  // Multi-payment splits state
-  const [paymentSplits, setPaymentSplits] = useState<PaymentSplitDraft[]>(() => [
-    createInitialPaymentSplit(enabledPaymentMethods[0]?.id ?? 'pm-pago-movil', 0),
-  ]);
+  // Multi-payment splits state (starts empty so user clicks "Agregar Pago" after selecting items)
+  const [paymentSplits, setPaymentSplits] = useState<PaymentSplitDraft[]>([]);
 
-  // Keep single payment split amount synced when cart changes (if user hasn't added a 2nd split yet)
   useEffect(() => {
-    setPaymentSplits((prev) => {
-      if (prev.length === 1) {
-        return [
-          {
-            ...prev[0],
-            methodId:
-              enabledPaymentMethods.find((pm) => pm.id === prev[0].methodId)?.id ??
-              enabledPaymentMethods[0]?.id ??
-              '',
-            amountUsd: cartTotal > 0 ? cartTotal.toFixed(2) : '',
-          },
-        ];
-      }
-      return prev;
-    });
-  }, [cartTotal, enabledPaymentMethods]);
+    if (cart.length === 0) {
+      setPaymentSplits([]);
+    }
+  }, [cart.length]);
+
+  const paymentValidation = useMemo(
+    () =>
+      validateAndBuildPaymentSplits(
+        paymentSplits,
+        enabledPaymentMethods,
+        cartTotal,
+        bcvRate
+      ),
+    [paymentSplits, enabledPaymentMethods, cartTotal, bcvRate]
+  );
 
   const [generalNotes, setGeneralNotes] = useState('');
   const [mobileCartOpen, setMobileCartOpen] = useState(false);
@@ -225,9 +220,7 @@ export function MeseraModule() {
 
     setCart([]);
     setGeneralNotes('');
-    setPaymentSplits([
-      createInitialPaymentSplit(enabledPaymentMethods[0]?.id ?? 'pm-pago-movil', 0),
-    ]);
+    setPaymentSplits([]);
     setMobileCartOpen(false);
     showToast(`Comanda ${order.code} enviada a Cocina.`, 'success');
   };
@@ -415,7 +408,7 @@ export function MeseraModule() {
       <div className="pt-3 border-t border-white/10 space-y-2.5">
         <div className="flex items-end justify-between">
           <div>
-            <span className="block text-xs text-zinc-400">Total del Pedido</span>
+            <span className="block text-xs text-zinc-400">Total a Cancelar</span>
             <span className="font-mono text-xs text-emerald-400 tabular-nums">
               {formatBs(cartTotal, bcvRate)}
             </span>
@@ -428,11 +421,17 @@ export function MeseraModule() {
         <button
           type="button"
           onClick={handleConfirmOrder}
-          disabled={cart.length === 0}
+          disabled={cart.length === 0 || !paymentValidation.ok}
           className="w-full flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-bold shadow-lg hover:shadow-xl transition-all cursor-pointer"
         >
           <CheckCircle2 className="w-4 h-4" />
-          <span>Confirmar Orden</span>
+          <span>
+            {cart.length === 0
+              ? 'Selecciona Productos'
+              : paymentValidation.ok
+              ? 'Confirmar Orden'
+              : 'Completa el Pago Total para Confirmar'}
+          </span>
         </button>
       </div>
     </div>

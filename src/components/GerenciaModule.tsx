@@ -19,6 +19,7 @@ import {
   MessageCircle,
   Phone,
   Plus,
+  Printer,
   QrCode,
   Receipt,
   Share2,
@@ -39,10 +40,12 @@ import {
 } from '../types/restaurant';
 import {
   AddDriverModal,
+  CreateGerenciaOrderModal,
   DispatchDeliveryModal,
   EditOrderModal,
   OrderCashierDetailModal,
   PasswordsModal,
+  ThermalReceiptModal,
 } from './GerenciaModals';
 import {
   BcvRateBanner,
@@ -122,6 +125,11 @@ export function GerenciaModule() {
   );
   const [addDriverModalOpen, setAddDriverModalOpen] = useState(false);
   const [dispatchingOrder, setDispatchingOrder] = useState<Order | null>(null);
+  const [createGerenciaOrderOpen, setCreateGerenciaOrderOpen] = useState(false);
+  const [thermalPrintTarget, setThermalPrintTarget] = useState<{
+    orders: Order[];
+    closure?: CashClosureRecord | null;
+  } | null>(null);
 
   // Menu CRUD State
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -773,6 +781,15 @@ export function GerenciaModule() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setCreateGerenciaOrderOpen(true)}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/15 text-xs font-bold text-white cursor-pointer whitespace-nowrap"
+                  >
+                    <Plus className="w-4 h-4 text-amber-400" />
+                    <span>+ Nueva Orden / Cobro</span>
+                  </button>
+
                   {unconfirmedShiftOrders.length > 0 && (
                     <button
                       type="button"
@@ -788,11 +805,36 @@ export function GerenciaModule() {
 
                   <button
                     type="button"
+                    onClick={() => {
+                      const targetOrders =
+                        confirmedShiftOrders.length > 0
+                          ? confirmedShiftOrders
+                          : openShiftOrders;
+                      if (targetOrders.length === 0) {
+                        showToast(
+                          'No hay pedidos en el turno actual para imprimir.',
+                          'error'
+                        );
+                        return;
+                      }
+                      setThermalPrintTarget({
+                        orders: targetOrders,
+                        closure: null,
+                      });
+                    }}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/45 text-xs font-bold text-amber-300 cursor-pointer whitespace-nowrap"
+                  >
+                    <Printer className="w-4 h-4 text-amber-400" />
+                    <span>Imprimir Reporte Térmico (80mm)</span>
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => handleExportCashClosureSummary()}
                     className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-amber-500/35 text-xs font-bold text-amber-300 cursor-pointer whitespace-nowrap"
                   >
                     <Download className="w-4 h-4 text-amber-400" />
-                    <span>Exportar Resumen de Cierre</span>
+                    <span>Exportar Resumen (.txt)</span>
                   </button>
 
                   <button
@@ -1068,8 +1110,8 @@ export function GerenciaModule() {
                                 .join(' · ')}
                             </p>
                           </div>
-                          <div className="flex items-center gap-3 shrink-0">
-                            <div className="text-right font-mono tabular-nums">
+                          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                            <div className="text-right font-mono tabular-nums mr-1">
                               <span className="block text-lg font-bold text-emerald-400">
                                 {formatCurrency(c.totalSales)}
                               </span>
@@ -1077,6 +1119,22 @@ export function GerenciaModule() {
                                 {formatBsAmount(totalBs)}
                               </span>
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const shiftOrders = orders.filter(
+                                  (o) => o.closedInShiftId === c.id
+                                );
+                                setThermalPrintTarget({
+                                  orders: shiftOrders,
+                                  closure: c,
+                                });
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-xs font-bold text-amber-300 cursor-pointer"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                              <span>Imprimir Térmico</span>
+                            </button>
                             <button
                               type="button"
                               onClick={() => handleExportCashClosureSummary(c)}
@@ -1107,20 +1165,30 @@ export function GerenciaModule() {
                     Supervisa órdenes de Sala y Menú Público · Edita o cancela pedidos confirmados
                   </p>
                 </div>
-                <div className="flex items-center gap-4 text-xs sm:text-sm font-mono tabular-nums text-zinc-300">
-                  <span>
-                    Activos:{' '}
-                    <strong className="text-amber-400">
-                      {pendingOrders.length + cookingOrders.length}
-                    </strong>
-                  </span>
-                  <span className="text-zinc-600">·</span>
-                  <span>
-                    Caja abierta:{' '}
-                    <strong className="text-emerald-400">
-                      {formatCurrency(openShiftTotal)} ({formatBs(openShiftTotal, bcvRate)})
-                    </strong>
-                  </span>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-4 text-xs sm:text-sm font-mono tabular-nums text-zinc-300">
+                    <span>
+                      Activos:{' '}
+                      <strong className="text-amber-400">
+                        {pendingOrders.length + cookingOrders.length}
+                      </strong>
+                    </span>
+                    <span className="text-zinc-600">·</span>
+                    <span>
+                      Caja abierta:{' '}
+                      <strong className="text-emerald-400">
+                        {formatCurrency(openShiftTotal)} ({formatBs(openShiftTotal, bcvRate)})
+                      </strong>
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCreateGerenciaOrderOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 text-white text-xs font-bold shadow-md cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>+ Nueva Orden / Cobro</span>
+                  </button>
                 </div>
               </div>
 
@@ -2066,6 +2134,19 @@ export function GerenciaModule() {
           order={dispatchingOrder}
           onClose={() => setDispatchingOrder(null)}
           onOpenAddDriver={() => setAddDriverModalOpen(true)}
+        />
+      )}
+      {createGerenciaOrderOpen && (
+        <CreateGerenciaOrderModal
+          onClose={() => setCreateGerenciaOrderOpen(false)}
+        />
+      )}
+      {thermalPrintTarget && (
+        <ThermalReceiptModal
+          orders={thermalPrintTarget.orders}
+          closureRecord={thermalPrintTarget.closure}
+          bcvRate={bcvRate}
+          onClose={() => setThermalPrintTarget(null)}
         />
       )}
     </div>

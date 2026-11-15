@@ -17,7 +17,6 @@ import { Order, OrderItem, Product, ProductCategory } from '../types/restaurant'
 import {
   PaymentSplitDraft,
   PaymentSplitForm,
-  createInitialPaymentSplit,
   validateAndBuildPaymentSplits,
 } from './PaymentSplitForm';
 import {
@@ -77,33 +76,34 @@ export function PublicMenuModule() {
     [cart]
   );
 
-  // Multi-payment splits state (same rules as Mesera: Pago Móvil bank/amount/ref6, Efectivo $/Bs, + Añadir otro pago)
-  const [paymentSplits, setPaymentSplits] = useState<PaymentSplitDraft[]>(() => [
-    createInitialPaymentSplit(enabledPayments[0]?.id ?? 'pm-pago-movil', 0),
-  ]);
+  // Multi-payment splits state (starts empty so customer clicks "Agregar Pago" after selecting items)
+  const [paymentSplits, setPaymentSplits] = useState<PaymentSplitDraft[]>([]);
 
   useEffect(() => {
-    setPaymentSplits((prev) => {
-      if (prev.length === 1) {
-        return [
-          {
-            ...prev[0],
-            methodId:
-              enabledPayments.find((pm) => pm.id === prev[0].methodId)?.id ??
-              enabledPayments[0]?.id ??
-              '',
-            amountUsd: cartTotal > 0 ? cartTotal.toFixed(2) : '',
-          },
-        ];
-      }
-      return prev;
-    });
-  }, [cartTotal, enabledPayments]);
+    if (cart.length === 0) {
+      setPaymentSplits([]);
+    }
+  }, [cart.length]);
 
   // Capture upload ONLY applies when Zelle is chosen
   const [proofFileName, setProofFileName] = useState<string>('');
   const [proofPreviewUrl, setProofPreviewUrl] = useState<string>('');
   const [confirmedOrderId, setConfirmedOrderId] = useState<string | null>(null);
+
+  const paymentValidation = useMemo(
+    () =>
+      validateAndBuildPaymentSplits(
+        paymentSplits,
+        enabledPayments,
+        cartTotal,
+        bcvRate,
+        {
+          isPublicMenu: true,
+          proofFileName,
+        }
+      ),
+    [paymentSplits, enabledPayments, cartTotal, bcvRate, proofFileName]
+  );
 
   const visibleProducts = useMemo(() => {
     return products.filter((p) => {
@@ -217,9 +217,7 @@ export function PublicMenuModule() {
     setCheckoutOpen(false);
     setProofFileName('');
     setProofPreviewUrl('');
-    setPaymentSplits([
-      createInitialPaymentSplit(enabledPayments[0]?.id ?? 'pm-pago-movil', 0),
-    ]);
+    setPaymentSplits([]);
     showToast(`¡Pedido ${order.code} enviado a Cocina y Gerencia!`, 'success');
   };
 
@@ -622,7 +620,7 @@ export function PublicMenuModule() {
               <div className="pt-4 border-t border-white/10 space-y-4">
                 <div className="flex items-end justify-between">
                   <div>
-                    <span className="block text-sm text-zinc-400">Monto Total a Pagar</span>
+                    <span className="block text-sm text-zinc-400">Total a Cancelar</span>
                     <span className="font-mono text-xs text-emerald-400 tabular-nums">
                       {formatBs(cartTotal, bcvRate)}
                     </span>
@@ -634,10 +632,14 @@ export function PublicMenuModule() {
 
                 <button
                   type="submit"
-                  disabled={cart.length === 0}
-                  className="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 disabled:opacity-40 text-white font-bold text-sm shadow-lg hover:shadow-xl transition-all cursor-pointer"
+                  disabled={cart.length === 0 || !paymentValidation.ok}
+                  className="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm shadow-lg hover:shadow-xl transition-all cursor-pointer"
                 >
-                  Confirmar Pago y Enviar Pedido
+                  {cart.length === 0
+                    ? 'Agrega Productos al Pedido'
+                    : paymentValidation.ok
+                    ? 'Confirmar Pago y Enviar Pedido'
+                    : 'Completa el Pago en su Totalidad para Confirmar'}
                 </button>
               </div>
             </form>

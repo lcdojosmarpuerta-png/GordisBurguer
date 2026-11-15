@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Banknote,
   Bike,
@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Copy,
   CreditCard,
+  Download,
   Eye,
   EyeOff,
   FileCheck2,
@@ -15,6 +16,7 @@ import {
   Minus,
   Phone,
   Plus,
+  Printer,
   Receipt,
   Save,
   Trash2,
@@ -22,10 +24,9 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
-import { PAGO_MOVIL_BANKS } from '../data/initialData';
 import { useRestaurant } from '../context/RestaurantContext';
 import {
-  CashCurrency,
+  CashClosureRecord,
   DeliveryDriver,
   Order,
   OrderItem,
@@ -33,10 +34,18 @@ import {
   OrderStatus,
   UserRole,
 } from '../types/restaurant';
-import { isEfectivoMethod, isPagoMovilMethod } from './PaymentSplitForm';
+import {
+  PaymentSplitDraft,
+  PaymentSplitForm,
+  createSplitsFromExistingOrder,
+  isEfectivoMethod,
+  isPagoMovilMethod,
+  validateAndBuildPaymentSplits,
+} from './PaymentSplitForm';
 import {
   OrderStatusText,
   formatBs,
+  formatBsAmount,
   formatCurrency,
   formatTime,
   modalityLabel,
@@ -158,6 +167,353 @@ export function PasswordsModal({ onClose }: { onClose: () => void }) {
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Thermal Printer Report Modal (58mm / 80mm POS receipt format)
+ * Displays daily sales summary, payment method breakdown, currency breakdown, and total collected.
+ */
+export function ThermalReceiptModal({
+  orders,
+  closureRecord,
+  bcvRate,
+  onClose,
+}: {
+  orders: Order[];
+  closureRecord?: CashClosureRecord | null;
+  bcvRate: number;
+  onClose: () => void;
+}) {
+  const { showToast } = useRestaurant();
+
+  const effectiveRate = closureRecord?.bcvRate || bcvRate;
+  const issueDateStr = closureRecord
+    ? new Date(closureRecord.closedAt).toLocaleString('es-VE')
+    : new Date().toLocaleString('es-VE');
+
+  const summaryData = useMemo(() => {
+    if (closureRecord) {
+      return {
+        orderCount: closureRecord.orderCount,
+        totalSalesUsd: closureRecord.totalSales,
+        totalSalesBs:
+          closureRecord.totalSalesBs || closureRecord.totalSales * effectiveRate,
+        byMethod: closureRecord.byMethod,
+        efectivoUsd: closureRecord.byCurrencySummary?.efectivoUsd ?? 0,
+        efectivoBs: closureRecord.byCurrencySummary?.efectivoBs ?? 0,
+        pagoMovilUsd: closureRecord.byCurrencySummary?.pagoMovilUsd ?? 0,
+        pagoMovilBs: closureRecord.byCurrencySummary?.pagoMovilBs ?? 0,
+        zelleUsd: closureRecord.byCurrencySummary?.zelleUsd ?? 0,
+        tarjetaUsd: closureRecord.byCurrencySummary?.tarjetaUsd ?? 0,
+      };
+    }
+
+    const byMethod: Record<string, number> = {};
+    let totalSalesUsd = 0;
+    let efectivoUsd = 0;
+    let efectivoBs = 0;
+    let pagoMovilUsd = 0;
+    let pagoMovilBs = 0;
+    let zelleUsd = 0;
+    let tarjetaUsd = 0;
+
+    for (const ord of orders) {
+      const r = ord.bcvRateAtOrder ?? effectiveRate;
+      totalSalesUsd += ord.total;
+
+      if (ord.payments && ord.payments.length > 0) {
+        for (const sp of ord.payments) {
+          const label =
+            sp.methodId === 'pm-efectivo'
+              ? `Efectivo (${sp.cashCurrency === 'VES' ? 'Bs' : '$'})`
+              : sp.methodName;
+          byMethod[label] = (byMethod[label] ?? 0) + sp.amountUsd;
+
+          const lower = sp.methodName.toLowerCase();
+          if (sp.methodId === 'pm-efectivo' || lower.includes('efectivo')) {
+            if (sp.cashCurrency === 'VES') {
+              efectivoBs += sp.amountBs || sp.amountUsd * r;
+            } else {
+              efectivoUsd += sp.amountUsd;
+            }
+          } else if (
+            sp.methodId === 'pm-pago-movil' ||
+            lower.includes('pago móvil') ||
+            lower.includes('pago movil')
+          ) {
+            pagoMovilUsd += sp.amountUsd;
+            pagoMovilBs += sp.amountBs || sp.amountUsd * r;
+          } else if (sp.methodId === 'pm-zelle' || lower.includes('zelle')) {
+            zelleUsd += sp.amountUsd;
+          } else if (sp.methodId === 'pm-tarjeta' || lower.includes('tarjeta')) {
+            tarjetaUsd += sp.amountUsd;
+          }
+        }
+      } else {
+        byMethod[ord.paymentMethodName] =
+          (byMethod[ord.paymentMethodName] ?? 0) + ord.total;
+        const lower = ord.paymentMethodName.toLowerCase();
+        if (ord.paymentMethodId === 'pm-efectivo' || lower.includes('efectivo')) {
+          if (ord.cashCurrency === 'VES') {
+            efectivoBs += ord.total * r;
+          } else {
+            efectivoUsd += ord.total;
+          }
+        } else if (
+          ord.paymentMethodId === 'pm-pago-movil' ||
+          lower.includes('pago móvil') ||
+          lower.includes('pago movil')
+        ) {
+          pagoMovilUsd += ord.total;
+          pagoMovilBs += ord.total * r;
+        } else if (ord.paymentMethodId === 'pm-zelle' || lower.includes('zelle')) {
+          zelleUsd += ord.total;
+        } else if (ord.paymentMethodId === 'pm-tarjeta' || lower.includes('tarjeta')) {
+          tarjetaUsd += ord.total;
+        }
+      }
+    }
+
+    return {
+      orderCount: orders.length,
+      totalSalesUsd,
+      totalSalesBs: totalSalesUsd * effectiveRate,
+      byMethod,
+      efectivoUsd,
+      efectivoBs,
+      pagoMovilUsd,
+      pagoMovilBs,
+      zelleUsd,
+      tarjetaUsd,
+    };
+  }, [orders, closureRecord, effectiveRate]);
+
+  const handlePrintThermal = () => {
+    try {
+      window.print();
+    } catch {
+      showToast('Usa el botón Descargar Ticket si tu navegador bloquea la impresión directa.', 'info');
+    }
+  };
+
+  const handleDownloadThermalTxt = () => {
+    const divider = '--------------------------------';
+    const doubleDivider = '================================';
+    const lines: string[] = [
+      doubleDivider,
+      '         GORDIS BURGUER         ',
+      '   REPORTE TÉRMICO DE CAJA Z    ',
+      doubleDivider,
+      `FECHA: ${issueDateStr}`,
+      `TASA BCV: Bs. ${effectiveRate.toFixed(2)} / $1`,
+      `ÓRDENES: ${summaryData.orderCount}`,
+      divider,
+      'RESUMEN DE VENTAS DEL DÍA',
+      `TOTAL ($):    ${formatCurrency(summaryData.totalSalesUsd)}`,
+      `TOTAL (Bs):   ${formatBsAmount(summaryData.totalSalesBs)}`,
+      divider,
+      'DESGLOSE POR MÉTODO DE PAGO',
+      ...Object.entries(summaryData.byMethod).map(
+        ([m, amt]) => `${m}: ${formatCurrency(amt)} (${formatBs(amt, effectiveRate)})`
+      ),
+      divider,
+      'DINERO RECAUDADO EN CAJA',
+      `Efectivo ($):  ${formatCurrency(summaryData.efectivoUsd)}`,
+      `Efectivo (Bs): ${formatBsAmount(summaryData.efectivoBs)}`,
+      `Pago Móvil:    ${formatCurrency(summaryData.pagoMovilUsd)} (${formatBsAmount(summaryData.pagoMovilBs)})`,
+      `Zelle ($):     ${formatCurrency(summaryData.zelleUsd)}`,
+      `Tarjeta/POS:   ${formatCurrency(summaryData.tarjetaUsd)}`,
+      doubleDivider,
+      `TOTAL RECAUDADO: ${formatCurrency(summaryData.totalSalesUsd)}`,
+      `EQUIV. BCV:      ${formatBsAmount(summaryData.totalSalesBs)}`,
+      doubleDivider,
+    ];
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ticket-termico-caja-${new Date().toISOString().slice(0, 10)}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('Ticket térmico 80mm descargado.', 'success');
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="w-full max-w-md rounded-2xl bg-zinc-900 border border-white/15 p-5 shadow-2xl max-h-[92vh] flex flex-col">
+        <div className="flex items-center justify-between pb-3 border-b border-white/10">
+          <div className="flex items-center gap-2">
+            <Printer className="w-5 h-5 text-amber-400" />
+            <div>
+              <h3 className="font-display text-base font-bold text-white">
+                Reporte para Impresora Térmica (80mm)
+              </h3>
+              <p className="text-[11px] text-zinc-400">
+                Formato estándar POS de Resumen Diario y Arqueo de Caja
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Scrollable Thermal Receipt Paper Preview */}
+        <div className="flex-1 overflow-y-auto my-4 flex justify-center bg-zinc-950/80 rounded-xl p-4 border border-white/10">
+          <div
+            id="thermal-print-area"
+            className="w-full max-w-[310px] bg-white text-black font-mono text-[11px] leading-snug p-4 rounded shadow-lg select-all"
+          >
+            <div className="text-center border-b border-dashed border-black pb-2.5 mb-2.5">
+              <p className="text-sm font-extrabold tracking-tight">GORDIS BURGUER</p>
+              <p className="text-[10px]">Hamburguesas · Perros · Papas</p>
+              <p className="text-[10px] font-bold mt-1">
+                {closureRecord ? `REPORTE CIERRE #${closureRecord.id.slice(-6)}` : 'REPORTE DE CAJA DIARIO (Z)'}
+              </p>
+              <p className="text-[10px] mt-0.5">{issueDateStr}</p>
+              <p className="text-[10px] font-bold mt-0.5">
+                TASA OFICIAL BCV: Bs. {effectiveRate.toFixed(2)} / $
+              </p>
+            </div>
+
+            {/* Section 1: Daily Sales Summary */}
+            <div className="border-b border-dashed border-black pb-2.5 mb-2.5 space-y-1">
+              <p className="font-bold text-center uppercase">Resumen de Ventas del Día</p>
+              <div className="flex justify-between">
+                <span>Órdenes Procesadas:</span>
+                <span className="font-bold">{summaryData.orderCount}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Totalidad Vendida ($):</span>
+                <span className="font-bold">{formatCurrency(summaryData.totalSalesUsd)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Totalidad Vendida (Bs):</span>
+                <span className="font-bold">{formatBsAmount(summaryData.totalSalesBs)}</span>
+              </div>
+            </div>
+
+            {/* Section 2: Payment Method Breakdown */}
+            <div className="border-b border-dashed border-black pb-2.5 mb-2.5 space-y-1">
+              <p className="font-bold text-center uppercase">Desglose por Método de Pago</p>
+              {Object.entries(summaryData.byMethod).length === 0 ? (
+                <p className="text-center text-[10px]">Sin transacciones registradas</p>
+              ) : (
+                Object.entries(summaryData.byMethod).map(([method, amt]) => (
+                  <div key={method} className="space-y-0.5">
+                    <div className="flex justify-between font-bold">
+                      <span className="truncate pr-2">{method}</span>
+                      <span>{formatCurrency(amt)}</span>
+                    </div>
+                    <div className="flex justify-between text-[10px]">
+                      <span>Equiv. BCV:</span>
+                      <span>{formatBs(amt, effectiveRate)}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Section 3: Total Collected by Currency */}
+            <div className="border-b border-dashed border-black pb-2.5 mb-2.5 space-y-1">
+              <p className="font-bold text-center uppercase">Arqueo de Dinero Recaudado</p>
+              <div className="flex justify-between">
+                <span>Efectivo en Dólares ($):</span>
+                <span className="font-bold">{formatCurrency(summaryData.efectivoUsd)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Efectivo en Bolívares:</span>
+                <span className="font-bold">{formatBsAmount(summaryData.efectivoBs)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Pago Móvil ($):</span>
+                <span className="font-bold">{formatCurrency(summaryData.pagoMovilUsd)}</span>
+              </div>
+              <div className="flex justify-between text-[10px]">
+                <span>Pago Móvil (Bs):</span>
+                <span>{formatBsAmount(summaryData.pagoMovilBs)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Zelle ($):</span>
+                <span className="font-bold">{formatCurrency(summaryData.zelleUsd)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Tarjeta / POS ($):</span>
+                <span className="font-bold">{formatCurrency(summaryData.tarjetaUsd)}</span>
+              </div>
+            </div>
+
+            {/* Section 4: Itemized Orders in Shift */}
+            {!closureRecord && orders.length > 0 && (
+              <div className="border-b border-dashed border-black pb-2.5 mb-2.5 space-y-1">
+                <p className="font-bold text-center uppercase">Detalle de Órdenes</p>
+                {orders.map((ord) => (
+                  <div key={ord.id} className="flex justify-between text-[10px]">
+                    <span className="truncate pr-2">
+                      {ord.code} ({ord.paymentMethodName})
+                    </span>
+                    <span className="font-bold shrink-0">{formatCurrency(ord.total)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Grand Total Footer */}
+            <div className="pt-1 space-y-1">
+              <div className="flex justify-between text-xs font-extrabold">
+                <span>TOTAL RECAUDADO ($):</span>
+                <span>{formatCurrency(summaryData.totalSalesUsd)}</span>
+              </div>
+              <div className="flex justify-between text-[11px] font-bold">
+                <span>TOTAL RECAUDADO (Bs):</span>
+                <span>{formatBsAmount(summaryData.totalSalesBs)}</span>
+              </div>
+              <p className="text-center text-[10px] pt-3">
+                *** FIN DEL REPORTE DE CAJA ***
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Modal Actions */}
+        <div className="pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={handleDownloadThermalTxt}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 cursor-pointer"
+          >
+            <Download className="w-4 h-4 text-amber-400" />
+            <span>Descargar Ticket (.txt)</span>
+          </button>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3.5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-300 cursor-pointer"
+            >
+              Cerrar
+            </button>
+            <button
+              type="button"
+              onClick={handlePrintThermal}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 text-white text-xs font-bold shadow-lg cursor-pointer"
+            >
+              <Printer className="w-4 h-4" />
+              <span>Imprimir Ticket Térmico</span>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -449,6 +805,11 @@ export function OrderCashierDetailModal({
   );
 }
 
+/**
+ * Gerencia / Mesera Edit Order Modal using the unified PaymentSplitForm
+ * (Shows Total a Cancelar, "Agregar Pago" button, compares total vs loaded payment,
+ * and blocks saving until payment is completed in full).
+ */
 export function EditOrderModal({
   order,
   onClose,
@@ -461,30 +822,33 @@ export function EditOrderModal({
   const [modality, setModality] = useState<OrderModality>(order.modality);
   const [tableNumber, setTableNumber] = useState<number>(order.tableNumber ?? 1);
   const [status, setStatus] = useState<OrderStatus>(order.status);
-  const [paymentMethodId, setPaymentMethodId] = useState<string>(order.paymentMethodId);
-  const [cashCurrency, setCashCurrency] = useState<CashCurrency>(
-    order.cashCurrency ?? 'USD'
-  );
   const [notes, setNotes] = useState<string>(order.notes ?? '');
   const [addProductId, setAddProductId] = useState<string>(products[0]?.id ?? '');
 
-  // Pago Móvil extra fields
-  const [pmBank, setPmBank] = useState<string>(
-    order.pagoMovilDetails?.bank ?? PAGO_MOVIL_BANKS[0]
+  const enabledPaymentMethods = useMemo(
+    () => paymentMethods.filter((pm) => pm.enabled),
+    [paymentMethods]
   );
-  const [pmAmount, setPmAmount] = useState<string>(
-    order.pagoMovilDetails?.amount !== undefined
-      ? String(order.pagoMovilDetails.amount)
-      : String(order.total)
-  );
-  const [pmRef6, setPmRef6] = useState<string>(
-    order.pagoMovilDetails?.referenceLast6 ?? ''
+
+  const [paymentSplits, setPaymentSplits] = useState<PaymentSplitDraft[]>(() =>
+    createSplitsFromExistingOrder(
+      order,
+      enabledPaymentMethods[0]?.id ?? 'pm-pago-movil'
+    )
   );
 
   const computedTotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
-  const selectedPm = paymentMethods.find((p) => p.id === paymentMethodId);
-  const isPagoMovil = isPagoMovilMethod(selectedPm?.id, selectedPm?.name);
-  const isEfectivo = isEfectivoMethod(selectedPm?.id, selectedPm?.name);
+
+  const paymentValidation = useMemo(
+    () =>
+      validateAndBuildPaymentSplits(
+        paymentSplits,
+        enabledPaymentMethods,
+        computedTotal,
+        bcvRate
+      ),
+    [paymentSplits, enabledPaymentMethods, computedTotal, bcvRate]
+  );
 
   const handleQtyChange = (idx: number, delta: number) => {
     setItems((prev) =>
@@ -515,21 +879,13 @@ export function EditOrderModal({
     e.preventDefault();
     if (items.length === 0) return;
 
-    if (isPagoMovil) {
-      const cleanRef = pmRef6.replace(/\D/g, '');
-      const parsedAmt = parseFloat(pmAmount);
-      if (!pmBank.trim() || Number.isNaN(parsedAmt) || parsedAmt <= 0 || cleanRef.length !== 6) {
-        showToast(
-          'Para Pago Móvil debes completar Banco, Monto y exactamente los 6 últimos dígitos de referencia.',
-          'error'
-        );
-        return;
-      }
+    if (!paymentValidation.ok || !paymentValidation.normalizedSplits) {
+      showToast(
+        paymentValidation.error ?? 'Completa el pago en su totalidad para guardar.',
+        'error'
+      );
+      return;
     }
-
-    const pmName = isEfectivo
-      ? `Efectivo (${cashCurrency === 'VES' ? 'Bs' : '$'})`
-      : selectedPm?.name ?? order.paymentMethodName;
 
     updateOrder(order.id, {
       items,
@@ -537,16 +893,13 @@ export function EditOrderModal({
       modality,
       tableNumber: modality === 'sitio' ? tableNumber : undefined,
       status,
-      paymentMethodId: selectedPm?.id ?? order.paymentMethodId,
-      paymentMethodName: pmName,
-      cashCurrency: isEfectivo ? cashCurrency : undefined,
-      pagoMovilDetails: isPagoMovil
-        ? {
-            bank: pmBank.trim(),
-            amount: parseFloat(pmAmount) || computedTotal,
-            referenceLast6: pmRef6.replace(/\D/g, '').slice(-6),
-          }
-        : undefined,
+      paymentMethodId:
+        paymentValidation.primaryMethodId ?? order.paymentMethodId,
+      paymentMethodName:
+        paymentValidation.primaryMethodName ?? order.paymentMethodName,
+      payments: paymentValidation.normalizedSplits,
+      cashCurrency: paymentValidation.primaryCashCurrency,
+      pagoMovilDetails: paymentValidation.primaryPagoMovil,
       notes: notes.trim() || undefined,
     });
     onClose();
@@ -558,10 +911,10 @@ export function EditOrderModal({
         <div className="flex items-center justify-between pb-4 border-b border-white/10">
           <div>
             <h3 className="font-display text-lg font-bold text-white">
-              Editar Pedido {order.code}
+              Editar Pedido y Pagos {order.code}
             </h3>
             <p className="text-xs text-amber-400">
-              Al guardar cambios se enviará una alerta de pedido modificado a Cocina
+              Compara el total a cancelar con los pagos cargados · Notifica cambios a Cocina
             </p>
           </div>
           <button
@@ -622,7 +975,7 @@ export function EditOrderModal({
           {/* Items list */}
           <div className="space-y-2">
             <label className="block text-xs font-medium text-zinc-400">
-              Productos del pedido
+              Artículos Seleccionados
             </label>
             {items.map((item, idx) => (
               <div
@@ -685,123 +1038,33 @@ export function EditOrderModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">
-                Método de Pago
-              </label>
-              <select
-                value={paymentMethodId}
-                onChange={(e) => setPaymentMethodId(e.target.value)}
-                className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3 py-2 text-xs text-white"
-              >
-                {paymentMethods.map((pm) => (
-                  <option key={pm.id} value={pm.id}>
-                    {pm.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">
-                Observaciones
-              </label>
-              <input
-                type="text"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Notas para cocina o entrega"
-                className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3 py-2 text-xs text-white"
-              />
-            </div>
+          {/* Redesigned Payment Split Form with "Agregar Pago" and Total Comparison */}
+          <div className="pt-2 border-t border-white/10">
+            <PaymentSplitForm
+              splits={paymentSplits}
+              onChangeSplits={setPaymentSplits}
+              enabledMethods={enabledPaymentMethods}
+              orderTotalUsd={computedTotal}
+              bcvRate={bcvRate}
+            />
           </div>
 
-          {isEfectivo && (
-            <div className="rounded-xl bg-zinc-950 border border-emerald-500/30 p-3 space-y-2">
-              <span className="block text-xs font-semibold text-emerald-400">
-                Moneda pagada en Efectivo:
-              </span>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setCashCurrency('USD')}
-                  className={`py-2 px-3 rounded-lg text-xs font-bold cursor-pointer ${
-                    cashCurrency === 'USD'
-                      ? 'bg-emerald-500 text-zinc-950'
-                      : 'bg-zinc-900 text-zinc-300 border border-white/10'
-                  }`}
-                >
-                  Dólares ($)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCashCurrency('VES')}
-                  className={`py-2 px-3 rounded-lg text-xs font-bold cursor-pointer ${
-                    cashCurrency === 'VES'
-                      ? 'bg-amber-500 text-zinc-950'
-                      : 'bg-zinc-900 text-zinc-300 border border-white/10'
-                  }`}
-                >
-                  Bolívares (Bs)
-                </button>
-              </div>
-            </div>
-          )}
+          <div>
+            <label className="block text-xs font-medium text-zinc-400 mb-1">
+              Observaciones
+            </label>
+            <input
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Notas para cocina o entrega"
+              className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3 py-2 text-xs text-white"
+            />
+          </div>
 
-          {isPagoMovil && (
-            <div className="rounded-xl bg-zinc-950 border border-amber-500/30 p-3.5 space-y-3">
-              <p className="text-xs font-semibold text-amber-400">
-                Datos de Pago Móvil (Obligatorios)
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                <div>
-                  <label className="block text-[11px] text-zinc-400 mb-1">Banco</label>
-                  <select
-                    value={pmBank}
-                    onChange={(e) => setPmBank(e.target.value)}
-                    className="w-full rounded-lg bg-zinc-900 border border-white/15 px-2.5 py-2 text-xs text-white"
-                  >
-                    {PAGO_MOVIL_BANKS.map((b) => (
-                      <option key={b} value={b}>
-                        {b}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] text-zinc-400 mb-1">Monto ($)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    required
-                    value={pmAmount}
-                    onChange={(e) => setPmAmount(e.target.value)}
-                    className="w-full rounded-lg bg-zinc-900 border border-white/15 px-2.5 py-2 text-xs font-mono text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-zinc-400 mb-1">
-                    Referencia (6 últimos dígitos)
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={6}
-                    required
-                    value={pmRef6}
-                    onChange={(e) => setPmRef6(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                    placeholder="Ej. 489821"
-                    className="w-full rounded-lg bg-zinc-900 border border-white/15 px-2.5 py-2 text-xs font-mono text-white"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="pt-4 border-t border-white/10 flex items-center justify-between gap-4">
+          <div className="pt-4 border-t border-white/10 flex flex-wrap items-center justify-between gap-4">
             <div className="text-sm">
-              <span className="text-zinc-400">Nuevo total: </span>
+              <span className="text-zinc-400">Total a Cancelar: </span>
               <strong className="font-mono text-lg text-white tabular-nums">
                 {formatCurrency(computedTotal)}
               </strong>
@@ -819,12 +1082,330 @@ export function EditOrderModal({
               </button>
               <button
                 type="submit"
-                disabled={items.length === 0}
-                className="px-5 py-2 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 text-xs font-bold text-white shadow-lg disabled:opacity-40 cursor-pointer"
+                disabled={items.length === 0 || !paymentValidation.ok}
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 text-xs font-bold text-white shadow-lg disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
               >
-                Guardar y Notificar a Cocina
+                {paymentValidation.ok
+                  ? 'Confirmar Pago y Guardar Cambios'
+                  : 'Completa el Pago Total para Guardar'}
               </button>
             </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * New Order / Direct Charge Modal in Gerencia
+ * Allows Gerencia to select products, view Total a Cancelar, click "Agregar Pago",
+ * compare total vs loaded payment, and confirm the order only when payment is 100% complete.
+ */
+export function CreateGerenciaOrderModal({ onClose }: { onClose: () => void }) {
+  const { products, paymentMethods, bcvRate, createOrder, showToast } = useRestaurant();
+  const availableProducts = useMemo(
+    () => products.filter((p) => p.available),
+    [products]
+  );
+  const enabledPaymentMethods = useMemo(
+    () => paymentMethods.filter((pm) => pm.enabled),
+    [paymentMethods]
+  );
+
+  const [items, setItems] = useState<OrderItem[]>([]);
+  const [selectedProdId, setSelectedProdId] = useState<string>(
+    availableProducts[0]?.id ?? ''
+  );
+  const [modality, setModality] = useState<OrderModality>('sitio');
+  const [tableNumber, setTableNumber] = useState<number>(1);
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [notes, setNotes] = useState('');
+  const [paymentSplits, setPaymentSplits] = useState<PaymentSplitDraft[]>([]);
+
+  const orderTotalUsd = useMemo(
+    () => items.reduce((acc, i) => acc + i.price * i.quantity, 0),
+    [items]
+  );
+
+  const paymentValidation = useMemo(
+    () =>
+      validateAndBuildPaymentSplits(
+        paymentSplits,
+        enabledPaymentMethods,
+        orderTotalUsd,
+        bcvRate
+      ),
+    [paymentSplits, enabledPaymentMethods, orderTotalUsd, bcvRate]
+  );
+
+  const handleAddProduct = () => {
+    const prod = availableProducts.find((p) => p.id === selectedProdId);
+    if (!prod) return;
+    setItems((prev) => {
+      const existing = prev.find((i) => i.productId === prod.id);
+      if (existing) {
+        return prev.map((i) =>
+          i.productId === prod.id ? { ...i, quantity: i.quantity + 1 } : i
+        );
+      }
+      return [
+        ...prev,
+        { productId: prod.id, name: prod.name, price: prod.price, quantity: 1 },
+      ];
+    });
+  };
+
+  const handleQtyChange = (idx: number, delta: number) => {
+    setItems((prev) =>
+      prev
+        .map((it, i) => (i === idx ? { ...it, quantity: it.quantity + delta } : it))
+        .filter((it) => it.quantity > 0)
+    );
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (items.length === 0) {
+      showToast('Selecciona al menos un producto.', 'error');
+      return;
+    }
+    if (!paymentValidation.ok || !paymentValidation.normalizedSplits) {
+      showToast(
+        paymentValidation.error ?? 'Completa el pago en su totalidad antes de confirmar.',
+        'error'
+      );
+      return;
+    }
+
+    const created = createOrder({
+      source: 'mesera',
+      modality,
+      tableNumber: modality === 'sitio' ? tableNumber : undefined,
+      customerName: customerName.trim() || undefined,
+      customerPhone: customerPhone.trim() || undefined,
+      deliveryAddress: modality === 'delivery' ? deliveryAddress.trim() : undefined,
+      items,
+      total: orderTotalUsd,
+      bcvRateAtOrder: bcvRate,
+      paymentMethodId:
+        paymentValidation.primaryMethodId ?? enabledPaymentMethods[0]?.id ?? 'pm-efectivo',
+      paymentMethodName:
+        paymentValidation.primaryMethodName ?? enabledPaymentMethods[0]?.name ?? 'Efectivo',
+      payments: paymentValidation.normalizedSplits,
+      pagoMovilDetails: paymentValidation.primaryPagoMovil,
+      cashCurrency: paymentValidation.primaryCashCurrency,
+      confirmedForClosure: true,
+      confirmedForClosureAt: new Date().toISOString(),
+      notes: notes.trim() || undefined,
+    });
+
+    showToast(
+      `Orden ${created.code} creada y confirmada en Caja Principal.`,
+      'success'
+    );
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="w-full max-w-xl rounded-2xl bg-zinc-900 border border-white/15 p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between pb-4 border-b border-white/10">
+          <div>
+            <h3 className="font-display text-lg font-bold text-white">
+              Registrar Orden y Pago en Gerencia
+            </h3>
+            <p className="text-xs text-zinc-400">
+              Selecciona los productos, haz clic en &ldquo;Agregar Pago&rdquo; y completa el total para confirmar
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="mt-5 space-y-4">
+          {/* 1. Product Selector */}
+          <div className="space-y-2">
+            <label className="block text-xs font-semibold text-white">
+              1. Seleccionar Artículos o Productos
+            </label>
+            <div className="flex items-center gap-2">
+              <select
+                value={selectedProdId}
+                onChange={(e) => setSelectedProdId(e.target.value)}
+                className="flex-1 rounded-xl bg-zinc-950 border border-white/15 px-3 py-2.5 text-xs text-white"
+              >
+                {availableProducts.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} — {formatCurrency(p.price)} ({formatBs(p.price, bcvRate)})
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleAddProduct}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold cursor-pointer whitespace-nowrap"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Agregar Artículo</span>
+              </button>
+            </div>
+
+            {items.length === 0 ? (
+              <p className="text-xs text-zinc-500 py-3 text-center border border-dashed border-white/10 rounded-xl">
+                Agrega uno o más productos para mostrar el total a cancelar.
+              </p>
+            ) : (
+              <div className="space-y-2 pt-1">
+                {items.map((item, idx) => (
+                  <div
+                    key={`${item.productId}-${idx}`}
+                    className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950 border border-white/10 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-white truncate">{item.name}</p>
+                      <p className="text-xs font-mono text-amber-400 tabular-nums">
+                        {formatCurrency(item.price * item.quantity)} ·{' '}
+                        {formatBs(item.price * item.quantity, bcvRate)}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleQtyChange(idx, -1)}
+                        className="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-800 text-zinc-200 cursor-pointer"
+                      >
+                        {item.quantity === 1 ? (
+                          <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                        ) : (
+                          <Minus className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                      <span className="w-6 text-center font-mono text-xs font-bold tabular-nums">
+                        {item.quantity}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleQtyChange(idx, 1)}
+                        className="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-800 text-zinc-200 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 2. Modality */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-zinc-400 mb-1">Modalidad</label>
+              <select
+                value={modality}
+                onChange={(e) => setModality(e.target.value as OrderModality)}
+                className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3 py-2 text-xs text-white"
+              >
+                <option value="sitio">Comer en sitio (Mesa)</option>
+                <option value="llevar">Para llevar</option>
+                <option value="delivery">Delivery</option>
+              </select>
+            </div>
+            {modality === 'sitio' && (
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">
+                  Número de Mesa
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={30}
+                  value={tableNumber}
+                  onChange={(e) => setTableNumber(Number(e.target.value))}
+                  className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3 py-2 text-xs font-mono text-white"
+                />
+              </div>
+            )}
+          </div>
+
+          {modality === 'delivery' && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <input
+                type="text"
+                required
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                placeholder="Nombre cliente *"
+                className="rounded-xl bg-zinc-950 border border-white/15 px-3 py-2 text-xs text-white"
+              />
+              <input
+                type="tel"
+                required
+                value={customerPhone}
+                onChange={(e) => setCustomerPhone(e.target.value)}
+                placeholder="Teléfono *"
+                className="rounded-xl bg-zinc-950 border border-white/15 px-3 py-2 text-xs font-mono text-white"
+              />
+              <input
+                type="text"
+                required
+                value={deliveryAddress}
+                onChange={(e) => setDeliveryAddress(e.target.value)}
+                placeholder="Dirección entrega *"
+                className="rounded-xl bg-zinc-950 border border-white/15 px-3 py-2 text-xs text-white"
+              />
+            </div>
+          )}
+
+          {/* 3. Payment Section with Total a Cancelar + Agregar Pago */}
+          <div className="pt-2 border-t border-white/10">
+            <PaymentSplitForm
+              splits={paymentSplits}
+              onChangeSplits={setPaymentSplits}
+              enabledMethods={enabledPaymentMethods}
+              orderTotalUsd={orderTotalUsd}
+              bcvRate={bcvRate}
+            />
+          </div>
+
+          <input
+            type="text"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Observación general para cocina (opcional)"
+            className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3 py-2 text-xs text-white"
+          />
+
+          <div className="pt-4 border-t border-white/10 flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={items.length === 0 || !paymentValidation.ok}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold text-white shadow-lg cursor-pointer"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>
+                {items.length === 0
+                  ? 'Selecciona Productos'
+                  : paymentValidation.ok
+                  ? 'Confirmar Orden en Caja'
+                  : 'Completa el Pago en su Totalidad'}
+              </span>
+            </button>
           </div>
         </form>
       </div>
