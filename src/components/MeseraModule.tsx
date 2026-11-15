@@ -1,13 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Building2,
   Check,
   CheckCircle2,
   ClipboardList,
   Copy,
-  CreditCard,
   Edit3,
-  Hash,
   LogOut,
   MessageCircle,
   Minus,
@@ -19,14 +16,21 @@ import {
   Utensils,
   X,
 } from 'lucide-react';
-import { PAGO_MOVIL_BANKS } from '../data/initialData';
 import { useRestaurant } from '../context/RestaurantContext';
 import { Order, OrderItem, Product, ProductCategory } from '../types/restaurant';
-import { EditOrderModal, isPagoMovilMethod } from './GerenciaModals';
+import { EditOrderModal } from './GerenciaModals';
 import {
+  PaymentSplitDraft,
+  PaymentSplitForm,
+  createInitialPaymentSplit,
+  validateAndBuildPaymentSplits,
+} from './PaymentSplitForm';
+import {
+  BcvRateBanner,
   BrandLogo,
   OrderStatusText,
   SafeProductImage,
+  formatBs,
   formatCurrency,
   formatTime,
   modalityLabel,
@@ -46,6 +50,7 @@ export function MeseraModule() {
     products,
     paymentMethods,
     orders,
+    bcvRate,
     createOrder,
     updateOrderStatus,
     getPublicMenuUrl,
@@ -66,14 +71,35 @@ export function MeseraModule() {
     () => paymentMethods.filter((pm) => pm.enabled),
     [paymentMethods]
   );
-  const [selectedPaymentId, setSelectedPaymentId] = useState<string>(
-    () => enabledPaymentMethods[0]?.id ?? ''
+
+  const cartTotal = useMemo(
+    () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
+    [cart]
   );
 
-  // Mandatory Pago Móvil Fields
-  const [pmBank, setPmBank] = useState<string>(PAGO_MOVIL_BANKS[0]);
-  const [pmAmount, setPmAmount] = useState<string>('');
-  const [pmReference6, setPmReference6] = useState<string>('');
+  // Multi-payment splits state
+  const [paymentSplits, setPaymentSplits] = useState<PaymentSplitDraft[]>(() => [
+    createInitialPaymentSplit(enabledPaymentMethods[0]?.id ?? 'pm-pago-movil', 0),
+  ]);
+
+  // Keep single payment split amount synced when cart changes (if user hasn't added a 2nd split yet)
+  useEffect(() => {
+    setPaymentSplits((prev) => {
+      if (prev.length === 1) {
+        return [
+          {
+            ...prev[0],
+            methodId:
+              enabledPaymentMethods.find((pm) => pm.id === prev[0].methodId)?.id ??
+              enabledPaymentMethods[0]?.id ??
+              '',
+            amountUsd: cartTotal > 0 ? cartTotal.toFixed(2) : '',
+          },
+        ];
+      }
+      return prev;
+    });
+  }, [cartTotal, enabledPaymentMethods]);
 
   const [generalNotes, setGeneralNotes] = useState('');
   const [mobileCartOpen, setMobileCartOpen] = useState(false);
@@ -82,32 +108,6 @@ export function MeseraModule() {
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [shareTable, setShareTable] = useState<number | undefined>(undefined);
   const [copiedLink, setCopiedLink] = useState(false);
-
-  const activePaymentMethod = useMemo(
-    () =>
-      enabledPaymentMethods.find((pm) => pm.id === selectedPaymentId) ??
-      enabledPaymentMethods[0],
-    [enabledPaymentMethods, selectedPaymentId]
-  );
-
-  const isPagoMovil = useMemo(
-    () => isPagoMovilMethod(activePaymentMethod?.id, activePaymentMethod?.name),
-    [activePaymentMethod]
-  );
-
-  const cartTotal = useMemo(
-    () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
-    [cart]
-  );
-
-  // Keep Pago Móvil amount synced with cart total by default when cart changes
-  useEffect(() => {
-    if (cartTotal > 0) {
-      setPmAmount(cartTotal.toFixed(2));
-    } else {
-      setPmAmount('');
-    }
-  }, [cartTotal]);
 
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
@@ -188,29 +188,21 @@ export function MeseraModule() {
       showToast('Selecciona el número de mesa.', 'error');
       return;
     }
-    if (!activePaymentMethod) {
+    if (enabledPaymentMethods.length === 0) {
       showToast('No hay métodos de pago activos configurados por Gerencia.', 'error');
       return;
     }
 
-    if (isPagoMovil) {
-      const cleanRef = pmReference6.replace(/\D/g, '');
-      const parsedAmount = parseFloat(pmAmount);
-      if (!pmBank.trim()) {
-        showToast('Selecciona el banco del Pago Móvil.', 'error');
-        return;
-      }
-      if (Number.isNaN(parsedAmount) || parsedAmount <= 0) {
-        showToast('Ingresa un monto válido para el Pago Móvil.', 'error');
-        return;
-      }
-      if (cleanRef.length !== 6) {
-        showToast(
-          'Ingresa obligatoriamente los 6 últimos dígitos del número de referencia de Pago Móvil.',
-          'error'
-        );
-        return;
-      }
+    const validation = validateAndBuildPaymentSplits(
+      paymentSplits,
+      enabledPaymentMethods,
+      cartTotal,
+      bcvRate
+    );
+
+    if (!validation.ok || !validation.normalizedSplits) {
+      showToast(validation.error ?? 'Verifica los datos del pago.', 'error');
+      return;
     }
 
     const order = createOrder({
@@ -222,21 +214,20 @@ export function MeseraModule() {
         notes: item.notes?.trim() || undefined,
       })),
       total: cartTotal,
-      paymentMethodId: activePaymentMethod.id,
-      paymentMethodName: activePaymentMethod.name,
-      pagoMovilDetails: isPagoMovil
-        ? {
-            bank: pmBank.trim(),
-            amount: parseFloat(pmAmount),
-            referenceLast6: pmReference6.replace(/\D/g, '').slice(0, 6),
-          }
-        : undefined,
+      bcvRateAtOrder: bcvRate,
+      paymentMethodId: validation.primaryMethodId ?? enabledPaymentMethods[0].id,
+      paymentMethodName: validation.primaryMethodName ?? enabledPaymentMethods[0].name,
+      payments: validation.normalizedSplits,
+      pagoMovilDetails: validation.primaryPagoMovil,
+      cashCurrency: validation.primaryCashCurrency,
       notes: generalNotes.trim() || undefined,
     });
 
     setCart([]);
     setGeneralNotes('');
-    setPmReference6('');
+    setPaymentSplits([
+      createInitialPaymentSplit(enabledPaymentMethods[0]?.id ?? 'pm-pago-movil', 0),
+    ]);
     setMobileCartOpen(false);
     showToast(`Comanda ${order.code} enviada a Cocina.`, 'success');
   };
@@ -261,11 +252,12 @@ export function MeseraModule() {
 
   const renderCartContent = () => (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between pb-4 border-b border-white/10">
+      <div className="flex items-center justify-between pb-3 border-b border-white/10">
         <div>
           <h2 className="font-display text-lg font-bold text-white">Orden Actual</h2>
           <p className="text-xs text-zinc-400 tabular-nums">
-            {cartCount} {cartCount === 1 ? 'producto' : 'productos'}
+            {cartCount} {cartCount === 1 ? 'producto' : 'productos'} · Tasa BCV: Bs.{' '}
+            {bcvRate.toFixed(2)}
           </p>
         </div>
         {cart.length > 0 && (
@@ -279,206 +271,136 @@ export function MeseraModule() {
         )}
       </div>
 
-      {/* Modality Selector */}
-      <div className="mt-4">
-        <span className="block text-xs font-medium text-zinc-400 mb-2">Modalidad de Servicio</span>
-        <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-zinc-950 border border-white/10">
-          <button
-            type="button"
-            onClick={() => setModality('sitio')}
-            className={`py-2 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
-              modality === 'sitio'
-                ? 'bg-amber-500 text-zinc-950'
-                : 'text-zinc-400 hover:text-white'
-            }`}
-          >
-            Comer en el sitio
-          </button>
-          <button
-            type="button"
-            onClick={() => setModality('llevar')}
-            className={`py-2 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
-              modality === 'llevar'
-                ? 'bg-amber-500 text-zinc-950'
-                : 'text-zinc-400 hover:text-white'
-            }`}
-          >
-            Para llevar
-          </button>
-        </div>
-
-        {modality === 'sitio' && (
-          <div className="mt-3">
-            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-              Número de Mesa
-            </label>
-            <div className="grid grid-cols-6 gap-1.5">
-              {TABLES.map((num) => (
-                <button
-                  key={num}
-                  type="button"
-                  onClick={() => setTableNumber(num)}
-                  className={`py-1.5 rounded-lg font-mono text-xs font-semibold tabular-nums transition-colors cursor-pointer ${
-                    tableNumber === num
-                      ? 'bg-red-600 text-white shadow-sm'
-                      : 'bg-zinc-950 text-zinc-300 border border-white/10 hover:border-amber-500/50'
-                  }`}
-                >
-                  M{num}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Cart Items */}
-      <div className="flex-1 overflow-y-auto my-4 space-y-3 pr-1">
-        {cart.length === 0 ? (
-          <div className="h-44 flex flex-col items-center justify-center text-center border border-dashed border-white/10 rounded-xl p-4">
-            <ShoppingBag className="w-8 h-8 text-zinc-600 mb-2" />
-            <p className="text-sm text-zinc-400">Selecciona platos del menú para armar la comanda.</p>
-          </div>
-        ) : (
-          cart.map((item) => (
-            <div
-              key={item.productId}
-              className="rounded-xl bg-zinc-950/80 border border-white/10 p-3 space-y-2"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-white truncate">{item.name}</p>
-                  <p className="text-xs font-mono text-amber-400 tabular-nums">
-                    {formatCurrency(item.price * item.quantity)}
-                  </p>
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => updateItemQty(item.productId, -1)}
-                    className="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-900 border border-white/10 text-zinc-300 hover:text-white cursor-pointer"
-                    aria-label="Restar cantidad"
-                  >
-                    {item.quantity === 1 ? (
-                      <Trash2 className="w-3.5 h-3.5 text-red-400" />
-                    ) : (
-                      <Minus className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-                  <span className="w-6 text-center font-mono text-xs font-bold text-white tabular-nums">
-                    {item.quantity}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => updateItemQty(item.productId, 1)}
-                    className="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-900 border border-white/10 text-zinc-300 hover:text-white cursor-pointer"
-                    aria-label="Sumar cantidad"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-              <input
-                type="text"
-                value={item.notes ?? ''}
-                onChange={(e) => updateItemNotes(item.productId, e.target.value)}
-                placeholder="Nota cocina (ej. sin cebolla, extra salsa)"
-                className="w-full rounded-lg bg-zinc-900 border border-white/10 px-2.5 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-amber-500/50"
-              />
-            </div>
-          ))
-        )}
-      </div>
-
-      {/* Payment Method & Mandatory Pago Móvil Fields */}
-      <div className="pt-3 border-t border-white/10 space-y-3">
+      {/* Scrollable Body for Modality + Items + Multi-Payment Form */}
+      <div className="flex-1 overflow-y-auto my-3 space-y-4 pr-1">
+        {/* Modality Selector */}
         <div>
-          <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-            Método de Pago
-          </label>
-          <div className="relative">
-            <CreditCard className="w-4 h-4 text-amber-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <select
-              value={activePaymentMethod?.id ?? ''}
-              onChange={(e) => setSelectedPaymentId(e.target.value)}
-              className="w-full rounded-xl bg-zinc-950 border border-white/15 pl-9 pr-3 py-2.5 text-xs font-medium text-white focus:outline-none focus:border-amber-500"
+          <span className="block text-xs font-medium text-zinc-400 mb-2">
+            Modalidad de Servicio
+          </span>
+          <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-zinc-950 border border-white/10">
+            <button
+              type="button"
+              onClick={() => setModality('sitio')}
+              className={`py-2 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                modality === 'sitio'
+                  ? 'bg-amber-500 text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
             >
-              {enabledPaymentMethods.map((pm) => (
-                <option key={pm.id} value={pm.id} className="bg-zinc-900">
-                  {pm.name}
-                </option>
-              ))}
-            </select>
+              Comer en el sitio
+            </button>
+            <button
+              type="button"
+              onClick={() => setModality('llevar')}
+              className={`py-2 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                modality === 'llevar'
+                  ? 'bg-amber-500 text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              Para llevar
+            </button>
           </div>
-        </div>
 
-        {/* Mandatory Pago Móvil Fields when Pago Móvil is selected */}
-        {isPagoMovil && (
-          <div className="rounded-xl bg-zinc-950 border border-amber-500/35 p-3 space-y-2.5">
-            <p className="text-[11px] font-semibold text-amber-400">
-              Datos Obligatorios de Pago Móvil
-            </p>
-
-            <div>
-              <label className="block text-[11px] text-zinc-400 mb-1">
-                Banco Emisor *
+          {modality === 'sitio' && (
+            <div className="mt-3">
+              <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                Número de Mesa
               </label>
-              <div className="relative">
-                <Building2 className="w-3.5 h-3.5 text-zinc-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <select
-                  value={pmBank}
-                  onChange={(e) => setPmBank(e.target.value)}
-                  className="w-full rounded-lg bg-zinc-900 border border-white/15 pl-8 pr-2.5 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
-                >
-                  {PAGO_MOVIL_BANKS.map((bank) => (
-                    <option key={bank} value={bank}>
-                      {bank}
-                    </option>
-                  ))}
-                </select>
+              <div className="grid grid-cols-6 gap-1.5">
+                {TABLES.map((num) => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => setTableNumber(num)}
+                    className={`py-1.5 rounded-lg font-mono text-xs font-semibold tabular-nums transition-colors cursor-pointer ${
+                      tableNumber === num
+                        ? 'bg-red-600 text-white shadow-sm'
+                        : 'bg-zinc-950 text-zinc-300 border border-white/10 hover:border-amber-500/50'
+                    }`}
+                  >
+                    M{num}
+                  </button>
+                ))}
               </div>
             </div>
+          )}
+        </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-[11px] text-zinc-400 mb-1">
-                  Monto Pagado ($) *
-                </label>
+        {/* Cart Items */}
+        <div className="space-y-2.5">
+          {cart.length === 0 ? (
+            <div className="h-36 flex flex-col items-center justify-center text-center border border-dashed border-white/10 rounded-xl p-4">
+              <ShoppingBag className="w-7 h-7 text-zinc-600 mb-2" />
+              <p className="text-xs text-zinc-400">
+                Selecciona platos del menú para armar la comanda.
+              </p>
+            </div>
+          ) : (
+            cart.map((item) => (
+              <div
+                key={item.productId}
+                className="rounded-xl bg-zinc-950/80 border border-white/10 p-3 space-y-2"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white truncate">{item.name}</p>
+                    <p className="text-xs font-mono text-amber-400 tabular-nums">
+                      {formatCurrency(item.price * item.quantity)}{' '}
+                      <span className="text-zinc-400">
+                        · {formatBs(item.price * item.quantity, bcvRate)}
+                      </span>
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => updateItemQty(item.productId, -1)}
+                      className="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-900 border border-white/10 text-zinc-300 hover:text-white cursor-pointer"
+                      aria-label="Restar cantidad"
+                    >
+                      {item.quantity === 1 ? (
+                        <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                      ) : (
+                        <Minus className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                    <span className="w-6 text-center font-mono text-xs font-bold text-white tabular-nums">
+                      {item.quantity}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => updateItemQty(item.productId, 1)}
+                      className="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-900 border border-white/10 text-zinc-300 hover:text-white cursor-pointer"
+                      aria-label="Sumar cantidad"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
                 <input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  required
-                  value={pmAmount}
-                  onChange={(e) => setPmAmount(e.target.value)}
-                  placeholder="0.00"
-                  className="w-full rounded-lg bg-zinc-900 border border-white/15 px-2.5 py-2 text-xs font-mono text-white tabular-nums focus:outline-none focus:border-amber-500"
+                  type="text"
+                  value={item.notes ?? ''}
+                  onChange={(e) => updateItemNotes(item.productId, e.target.value)}
+                  placeholder="Nota cocina (ej. sin cebolla, extra salsa)"
+                  className="w-full rounded-lg bg-zinc-900 border border-white/10 px-2.5 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-amber-500/50"
                 />
               </div>
+            ))
+          )}
+        </div>
 
-              <div>
-                <label className="block text-[11px] text-zinc-400 mb-1">
-                  Ref. (6 últimos dígitos) *
-                </label>
-                <div className="relative">
-                  <Hash className="w-3.5 h-3.5 text-amber-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={6}
-                    required
-                    value={pmReference6}
-                    onChange={(e) =>
-                      setPmReference6(e.target.value.replace(/\D/g, '').slice(0, 6))
-                    }
-                    placeholder="Ej. 489821"
-                    className="w-full rounded-lg bg-zinc-900 border border-white/15 pl-7 pr-2.5 py-2 text-xs font-mono text-white tabular-nums focus:outline-none focus:border-amber-500"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Multi-Payment Form (+ Añadir otro pago, Efectivo $/Bs, Pago Móvil) */}
+        <div className="pt-2 border-t border-white/10">
+          <PaymentSplitForm
+            splits={paymentSplits}
+            onChangeSplits={setPaymentSplits}
+            enabledMethods={enabledPaymentMethods}
+            orderTotalUsd={cartTotal}
+            bcvRate={bcvRate}
+          />
+        </div>
 
         <input
           type="text"
@@ -487,9 +409,17 @@ export function MeseraModule() {
           placeholder="Observación general del pedido (opcional)"
           className="w-full rounded-xl bg-zinc-950 border border-white/10 px-3 py-2 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-amber-500/50"
         />
+      </div>
 
-        <div className="flex items-center justify-between pt-1">
-          <span className="text-sm text-zinc-400">Total a cobrar</span>
+      {/* Footer Totals & Submit */}
+      <div className="pt-3 border-t border-white/10 space-y-2.5">
+        <div className="flex items-end justify-between">
+          <div>
+            <span className="block text-xs text-zinc-400">Total del Pedido</span>
+            <span className="font-mono text-xs text-emerald-400 tabular-nums">
+              {formatBs(cartTotal, bcvRate)}
+            </span>
+          </div>
           <span className="font-mono text-2xl font-bold text-white tabular-nums">
             {formatCurrency(cartTotal)}
           </span>
@@ -511,8 +441,13 @@ export function MeseraModule() {
   return (
     <div className="min-h-screen bg-[#0B0C0E] text-zinc-100 flex flex-col">
       {/* Top Bar Contract */}
-      <header className="sticky top-0 z-30 flex items-center justify-between gap-4 px-4 sm:px-8 py-3.5 bg-zinc-950/90 backdrop-blur-xl border-b border-white/10">
-        <BrandLogo size="sm" />
+      <header className="sticky top-0 z-30 flex items-center justify-between gap-3 px-4 sm:px-8 py-3.5 bg-zinc-950/90 backdrop-blur-xl border-b border-white/10">
+        <div className="flex items-center gap-3">
+          <BrandLogo size="sm" />
+          <div className="hidden xl:block">
+            <BcvRateBanner compact />
+          </div>
+        </div>
 
         <nav className="flex items-center gap-1 p-1 rounded-xl bg-zinc-900 border border-white/10">
           <button
@@ -561,6 +496,11 @@ export function MeseraModule() {
       </header>
 
       <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-6 pb-24 lg:pb-8">
+        {/* Mobile/Tablet BCV Rate Strip */}
+        <div className="xl:hidden mb-4 flex items-center justify-between">
+          <BcvRateBanner />
+        </div>
+
         {activeTab === 'carta' ? (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
             {/* Menu Catalog */}
@@ -624,9 +564,14 @@ export function MeseraModule() {
                         </div>
 
                         <div className="flex items-center justify-between pt-2 border-t border-white/5">
-                          <span className="font-mono text-base font-bold text-amber-400 tabular-nums">
-                            {formatCurrency(product.price)}
-                          </span>
+                          <div>
+                            <span className="block font-mono text-base font-bold text-amber-400 tabular-nums">
+                              {formatCurrency(product.price)}
+                            </span>
+                            <span className="block font-mono text-[11px] text-zinc-400 tabular-nums">
+                              {formatBs(product.price, bcvRate)}
+                            </span>
+                          </div>
 
                           {inCart ? (
                             <div className="flex items-center gap-1.5">
@@ -667,7 +612,7 @@ export function MeseraModule() {
             </div>
 
             {/* Desktop Floating/Sticky Cart Panel */}
-            <aside className="hidden lg:block lg:col-span-4 sticky top-20 rounded-2xl bg-zinc-900/85 backdrop-blur-xl border border-white/15 p-5 shadow-2xl max-h-[calc(100vh-6.5rem)]">
+            <aside className="hidden lg:block lg:col-span-4 sticky top-20 rounded-2xl bg-zinc-900/85 backdrop-blur-xl border border-white/15 p-5 shadow-2xl max-h-[calc(100vh-6rem)] flex flex-col">
               {renderCartContent()}
             </aside>
           </div>
@@ -679,7 +624,7 @@ export function MeseraModule() {
                 Seguimiento de Mesas y Para Llevar
               </h1>
               <p className="text-sm text-zinc-400 mt-1">
-                Sincronización en vivo con Cocina · Puedes modificar una orden o marcarla como servida
+                Sincronización en vivo con Cocina · Precios expresados en $ y Bs (Tasa BCV)
               </p>
             </div>
 
@@ -692,91 +637,129 @@ export function MeseraModule() {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {activeSalaOrders.map((order) => (
-                  <div
-                    key={order.id}
-                    className={`rounded-2xl border p-5 flex flex-col justify-between gap-4 ${
-                      order.status === 'listo'
-                        ? 'bg-emerald-950/25 border-emerald-500/40'
-                        : 'bg-zinc-900/80 border-white/10'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between gap-2 pb-3 border-b border-white/10">
-                        <div>
-                          <span className="font-mono text-lg font-bold text-white tabular-nums">
-                            {order.code}
-                          </span>
-                          <span className="text-zinc-500 mx-2">·</span>
-                          <span className="text-sm font-semibold text-amber-400">
-                            {modalityLabel(order.modality, order.tableNumber)}
-                          </span>
-                        </div>
-                        <OrderStatusText status={order.status} />
-                      </div>
-
-                      <ul className="mt-3 space-y-1.5 text-sm text-zinc-200">
-                        {order.items.map((it, idx) => (
-                          <li key={idx} className="flex items-baseline justify-between gap-2">
-                            <span>
-                              <strong className="font-mono text-amber-400 tabular-nums">
-                                {it.quantity}x
-                              </strong>{' '}
-                              {it.name}
+                {activeSalaOrders.map((order) => {
+                  const rate = order.bcvRateAtOrder ?? bcvRate;
+                  return (
+                    <div
+                      key={order.id}
+                      className={`rounded-2xl border p-5 flex flex-col justify-between gap-4 ${
+                        order.status === 'listo'
+                          ? 'bg-emerald-950/25 border-emerald-500/40'
+                          : 'bg-zinc-900/80 border-white/10'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between gap-2 pb-3 border-b border-white/10">
+                          <div>
+                            <span className="font-mono text-lg font-bold text-white tabular-nums">
+                              {order.code}
                             </span>
-                            <span className="font-mono text-xs text-zinc-400 tabular-nums">
-                              {formatCurrency(it.price * it.quantity)}
+                            <span className="text-zinc-500 mx-2">·</span>
+                            <span className="text-sm font-semibold text-amber-400">
+                              {modalityLabel(order.modality, order.tableNumber)}
                             </span>
-                          </li>
-                        ))}
-                      </ul>
-
-                      {order.pagoMovilDetails && (
-                        <div className="mt-3 text-xs font-mono text-zinc-300 bg-zinc-950 rounded-lg px-2.5 py-1.5 border border-white/5 tabular-nums">
-                          {order.pagoMovilDetails.bank} ·{' '}
-                          {formatCurrency(order.pagoMovilDetails.amount)} · Ref:{' '}
-                          <strong className="text-amber-400">
-                            #{order.pagoMovilDetails.referenceLast6}
-                          </strong>
+                          </div>
+                          <OrderStatusText status={order.status} />
                         </div>
-                      )}
-                    </div>
 
-                    <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-3">
-                      <div className="text-xs text-zinc-400 tabular-nums">
-                        {formatTime(order.createdAt)} · {order.paymentMethodName} ·{' '}
-                        <strong className="text-white font-mono">
-                          {formatCurrency(order.total)}
-                        </strong>
-                      </div>
+                        <ul className="mt-3 space-y-1.5 text-sm text-zinc-200">
+                          {order.items.map((it, idx) => (
+                            <li key={idx} className="flex items-baseline justify-between gap-2">
+                              <span>
+                                <strong className="font-mono text-amber-400 tabular-nums">
+                                  {it.quantity}x
+                                </strong>{' '}
+                                {it.name}
+                              </span>
+                              <span className="font-mono text-xs text-zinc-400 tabular-nums">
+                                {formatCurrency(it.price * it.quantity)} ·{' '}
+                                {formatBs(it.price * it.quantity, rate)}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => setEditingSalaOrder(order)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-amber-300 cursor-pointer"
-                          title="Modificar pedido (notifica a Cocina)"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                          <span>Modificar</span>
-                        </button>
-                        {order.status === 'listo' && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              updateOrderStatus(order.id, 'servido');
-                              showToast(`Pedido ${order.code} marcado como servido.`, 'success');
-                            }}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors cursor-pointer"
-                          >
-                            <Utensils className="w-3.5 h-3.5" />
-                            <span>Servido</span>
-                          </button>
+                        {order.payments && order.payments.length > 0 ? (
+                          <div className="mt-3 space-y-1">
+                            {order.payments.map((sp) => (
+                              <div
+                                key={sp.id}
+                                className="text-xs font-mono text-zinc-300 bg-zinc-950 rounded-lg px-2.5 py-1.5 border border-white/5 tabular-nums"
+                              >
+                                <span className="font-sans text-amber-400 font-semibold">
+                                  {sp.methodName}
+                                  {sp.cashCurrency
+                                    ? ` (${sp.cashCurrency === 'VES' ? 'Bs' : '$'})`
+                                    : ''}
+                                  :
+                                </span>{' '}
+                                {formatCurrency(sp.amountUsd)} ({formatBs(sp.amountUsd, rate)})
+                                {sp.pagoMovilDetails && (
+                                  <span>
+                                    {' '}
+                                    · {sp.pagoMovilDetails.bank} · Ref: #
+                                    {sp.pagoMovilDetails.referenceLast6}
+                                  </span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          order.pagoMovilDetails && (
+                            <div className="mt-3 text-xs font-mono text-zinc-300 bg-zinc-950 rounded-lg px-2.5 py-1.5 border border-white/5 tabular-nums">
+                              {order.pagoMovilDetails.bank} ·{' '}
+                              {formatCurrency(order.pagoMovilDetails.amount)} · Ref:{' '}
+                              <strong className="text-amber-400">
+                                #{order.pagoMovilDetails.referenceLast6}
+                              </strong>
+                            </div>
+                          )
                         )}
                       </div>
+
+                      <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-3">
+                        <div className="text-xs text-zinc-400 tabular-nums">
+                          <div>
+                            {formatTime(order.createdAt)} · {order.paymentMethodName}
+                          </div>
+                          <div className="mt-0.5">
+                            <strong className="text-white font-mono">
+                              {formatCurrency(order.total)}
+                            </strong>{' '}
+                            <span className="text-emerald-400 font-mono">
+                              ({formatBs(order.total, rate)})
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setEditingSalaOrder(order)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-amber-300 cursor-pointer"
+                            title="Modificar pedido (notifica a Cocina)"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            <span>Modificar</span>
+                          </button>
+                          {order.status === 'listo' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                updateOrderStatus(order.id, 'servido');
+                                showToast(`Pedido ${order.code} marcado como servido.`, 'success');
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors cursor-pointer"
+                            >
+                              <Utensils className="w-3.5 h-3.5" />
+                              <span>Servido</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -795,7 +778,9 @@ export function MeseraModule() {
               <ShoppingBag className="w-4 h-4" />
               <span>Ver Orden ({cartCount})</span>
             </span>
-            <span className="font-mono font-bold tabular-nums">{formatCurrency(cartTotal)}</span>
+            <span className="font-mono font-bold tabular-nums">
+              {formatCurrency(cartTotal)} · {formatBs(cartTotal, bcvRate)}
+            </span>
           </button>
         </div>
       )}
@@ -837,7 +822,7 @@ export function MeseraModule() {
             </div>
 
             <p className="text-xs text-zinc-400">
-              Genera un enlace directo para que el cliente seleccione su pedido y envíe su comprobante.
+              Genera un enlace directo para que el cliente seleccione su pedido y registre su pago.
             </p>
 
             <div>
@@ -870,7 +855,11 @@ export function MeseraModule() {
                 onClick={handleCopyMenuLink}
                 className="flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold transition-colors cursor-pointer"
               >
-                {copiedLink ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                {copiedLink ? (
+                  <Check className="w-4 h-4 text-emerald-400" />
+                ) : (
+                  <Copy className="w-4 h-4" />
+                )}
                 <span>{copiedLink ? 'Copiado' : 'Copiar Link'}</span>
               </button>
               <a

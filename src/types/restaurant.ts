@@ -16,6 +16,8 @@ export type OrderStatus =
 
 export type OrderSource = 'mesera' | 'menu_publico';
 
+export type CashCurrency = 'USD' | 'VES';
+
 export interface RoleCredentials {
   gerencia: string;
   mesera: string;
@@ -44,6 +46,16 @@ export interface PagoMovilDetails {
   bank: string;
   amount: number;
   referenceLast6: string;
+}
+
+export interface OrderPaymentSplit {
+  id: string;
+  methodId: string;
+  methodName: string;
+  amountUsd: number;
+  amountBs: number;
+  cashCurrency?: CashCurrency; // For Efectivo ($ / Bs): 'USD' ($) or 'VES' (Bs)
+  pagoMovilDetails?: PagoMovilDetails;
 }
 
 export interface DeliveryDriver {
@@ -76,15 +88,21 @@ export interface Order {
   deliveryAddress?: string;
   items: OrderItem[];
   total: number;
+  bcvRateAtOrder?: number;
   paymentMethodId: string;
   paymentMethodName: string;
+  payments?: OrderPaymentSplit[];
   pagoMovilDetails?: PagoMovilDetails;
+  cashCurrency?: CashCurrency;
   paymentProofName?: string;
   paymentProofUrl?: string;
   status: OrderStatus;
   createdAt: string;
   updatedAt: string;
   notes?: string;
+  // Caja Principal confirmation & closure tracking
+  confirmedForClosure?: boolean;
+  confirmedForClosureAt?: string;
   closedInShiftId?: string;
   // Delivery assignment
   assignedDriverId?: string;
@@ -103,8 +121,20 @@ export interface CashClosureRecord {
   id: string;
   closedAt: string;
   totalSales: number;
+  totalSalesBs: number;
+  bcvRate: number;
   orderCount: number;
   byMethod: Record<string, number>;
+  byCurrencySummary?: {
+    efectivoUsd: number;
+    efectivoBs: number;
+    pagoMovilUsd: number;
+    pagoMovilBs: number;
+    zelleUsd: number;
+    tarjetaUsd: number;
+    otrosUsd: number;
+  };
+  orderCodes?: string[];
   closedBy: string;
 }
 

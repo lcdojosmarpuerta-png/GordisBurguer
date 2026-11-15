@@ -1,16 +1,21 @@
 import React, { useState } from 'react';
 import {
+  Banknote,
   Bike,
+  Building2,
   Check,
   CheckCircle2,
   Copy,
+  CreditCard,
   Eye,
   EyeOff,
+  FileCheck2,
   KeyRound,
   MessageCircle,
   Minus,
   Phone,
   Plus,
+  Receipt,
   Save,
   Trash2,
   Truck,
@@ -20,6 +25,7 @@ import {
 import { PAGO_MOVIL_BANKS } from '../data/initialData';
 import { useRestaurant } from '../context/RestaurantContext';
 import {
+  CashCurrency,
   DeliveryDriver,
   Order,
   OrderItem,
@@ -27,14 +33,16 @@ import {
   OrderStatus,
   UserRole,
 } from '../types/restaurant';
-import { formatCurrency } from './SharedUI';
+import { isEfectivoMethod, isPagoMovilMethod } from './PaymentSplitForm';
+import {
+  OrderStatusText,
+  formatBs,
+  formatCurrency,
+  formatTime,
+  modalityLabel,
+} from './SharedUI';
 
-export function isPagoMovilMethod(id?: string, name?: string): boolean {
-  if (!id && !name) return false;
-  if (id === 'pm-pago-movil') return true;
-  const lower = (name ?? '').toLowerCase();
-  return lower.includes('pago móvil') || lower.includes('pago movil');
-}
+export { isPagoMovilMethod, isEfectivoMethod };
 
 export function PasswordsModal({ onClose }: { onClose: () => void }) {
   const { credentials, updateRolePassword } = useRestaurant();
@@ -155,6 +163,292 @@ export function PasswordsModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * Modal for Caja Principal showing full Order Description, Confirmed Payment Methods,
+ * and a button to confirm the order so it is summed into the Cash Closure (Cierre de Caja).
+ */
+export function OrderCashierDetailModal({
+  order,
+  onClose,
+}: {
+  order: Order;
+  onClose: () => void;
+}) {
+  const { bcvRate, confirmOrderForClosure } = useRestaurant();
+  const rate = order.bcvRateAtOrder ?? bcvRate;
+
+  const handleConfirmForClosure = () => {
+    confirmOrderForClosure(order.id);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="w-full max-w-2xl rounded-2xl bg-zinc-900 border border-white/15 p-6 shadow-2xl max-h-[90vh] overflow-y-auto space-y-5">
+        <div className="flex items-start justify-between gap-3 pb-4 border-b border-white/10">
+          <div>
+            <div className="flex items-center gap-2.5">
+              <Receipt className="w-5 h-5 text-amber-400" />
+              <h3 className="font-display text-xl font-bold text-white">
+                Detalle de Pedido {order.code} y Pago Confirmado
+              </h3>
+            </div>
+            <p className="text-xs text-zinc-400 mt-1">
+              Registrado a las {formatTime(order.createdAt)} · Origen:{' '}
+              {order.source === 'mesera' ? 'Sala / Mesera' : 'Menú Público'} · Tasa BCV: Bs.{' '}
+              {rate.toFixed(2)} / $
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Status & Modality Summary */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="rounded-xl bg-zinc-950 border border-white/10 p-3">
+            <span className="block text-[11px] text-zinc-400">Modalidad</span>
+            <p className="text-sm font-semibold text-amber-400 mt-0.5">
+              {modalityLabel(order.modality, order.tableNumber)}
+            </p>
+          </div>
+          <div className="rounded-xl bg-zinc-950 border border-white/10 p-3">
+            <span className="block text-[11px] text-zinc-400">Estado Operativo</span>
+            <div className="mt-1">
+              <OrderStatusText status={order.status} />
+            </div>
+          </div>
+          <div className="rounded-xl bg-zinc-950 border border-white/10 p-3">
+            <span className="block text-[11px] text-zinc-400">Estado en Cierre de Caja</span>
+            <p
+              className={`text-xs font-bold mt-1 ${
+                order.confirmedForClosure ? 'text-emerald-400' : 'text-amber-400'
+              }`}
+            >
+              {order.confirmedForClosure
+                ? 'Confirmado para Cierre de Caja'
+                : 'Pendiente por Confirmar en Caja'}
+            </p>
+          </div>
+        </div>
+
+        {(order.customerName || order.customerPhone || order.deliveryAddress) && (
+          <div className="rounded-xl bg-zinc-950 border border-white/10 p-3.5 text-xs space-y-1">
+            <p className="font-semibold text-zinc-200">Datos del Cliente / Entrega:</p>
+            {order.customerName && (
+              <p className="text-zinc-300">
+                <span className="text-zinc-500">Cliente:</span> {order.customerName}
+              </p>
+            )}
+            {order.customerPhone && (
+              <p className="text-zinc-300 font-mono">
+                <span className="text-zinc-500 font-sans">Teléfono:</span>{' '}
+                {order.customerPhone}
+              </p>
+            )}
+            {order.deliveryAddress && (
+              <p className="text-zinc-300">
+                <span className="text-zinc-500">Dirección:</span> {order.deliveryAddress}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Itemized Order Description */}
+        <div className="rounded-xl bg-zinc-950 border border-white/10 overflow-hidden">
+          <div className="px-4 py-2.5 bg-zinc-900/80 border-b border-white/10 flex items-center justify-between">
+            <span className="text-xs font-bold text-white">Descripción de Platos</span>
+            <span className="text-xs text-zinc-400 font-mono tabular-nums">
+              {order.items.reduce((acc, i) => acc + i.quantity, 0)} unidades
+            </span>
+          </div>
+          <div className="divide-y divide-white/5">
+            {order.items.map((it, idx) => {
+              const lineUsd = it.price * it.quantity;
+              return (
+                <div
+                  key={idx}
+                  className="px-4 py-3 flex items-start justify-between gap-3 text-xs sm:text-sm"
+                >
+                  <div>
+                    <p className="font-semibold text-white">
+                      <span className="font-mono text-amber-400 mr-1.5">{it.quantity}x</span>
+                      {it.name}
+                    </p>
+                    <p className="text-[11px] text-zinc-400 font-mono tabular-nums">
+                      Unitario: {formatCurrency(it.price)} ({formatBs(it.price, rate)})
+                    </p>
+                    {it.notes && (
+                      <p className="text-xs text-amber-300 mt-1">Nota: {it.notes}</p>
+                    )}
+                  </div>
+                  <div className="text-right font-mono tabular-nums shrink-0">
+                    <p className="font-bold text-white">{formatCurrency(lineUsd)}</p>
+                    <p className="text-xs text-emerald-400">{formatBs(lineUsd, rate)}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {order.notes && (
+            <div className="px-4 py-2.5 bg-zinc-900/50 border-t border-white/10 text-xs text-zinc-300">
+              <strong className="text-amber-400">Observación general:</strong> {order.notes}
+            </div>
+          )}
+        </div>
+
+        {/* Confirmed Payment Method(s) Breakdown */}
+        <div className="rounded-xl bg-zinc-950 border border-amber-500/35 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="inline-flex items-center gap-2 text-xs font-bold text-amber-400 uppercase tracking-wider">
+              <CreditCard className="w-4 h-4" />
+              <span>Método(s) de Pago Confirmado(s)</span>
+            </span>
+            <span className="text-xs font-semibold text-white">
+              {order.paymentMethodName}
+            </span>
+          </div>
+
+          {order.payments && order.payments.length > 0 ? (
+            <div className="space-y-2">
+              {order.payments.map((split, idx) => (
+                <div
+                  key={split.id || idx}
+                  className="rounded-lg bg-zinc-900 border border-white/10 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-white">
+                        Pago #{idx + 1}: {split.methodName}
+                      </span>
+                      {split.cashCurrency && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-semibold">
+                          <Banknote className="w-3 h-3" />
+                          Moneda pagada:{' '}
+                          {split.cashCurrency === 'VES' ? 'Bolívares (Bs)' : 'Dólares ($)'}
+                        </span>
+                      )}
+                    </div>
+
+                    {split.pagoMovilDetails && (
+                      <div className="font-mono text-zinc-300 tabular-nums">
+                        <Building2 className="w-3.5 h-3.5 inline mr-1 text-amber-400" />
+                        Banco: <strong>{split.pagoMovilDetails.bank}</strong> · Monto:{' '}
+                        <strong className="text-emerald-400">
+                          {formatCurrency(split.pagoMovilDetails.amount)} (
+                          {formatBs(split.pagoMovilDetails.amount, rate)})
+                        </strong>{' '}
+                        · Ref 6 dígitos:{' '}
+                        <strong className="text-amber-400">
+                          #{split.pagoMovilDetails.referenceLast6}
+                        </strong>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="text-right font-mono tabular-nums shrink-0">
+                    <p className="text-sm font-bold text-white">
+                      {formatCurrency(split.amountUsd)}
+                    </p>
+                    <p className="text-xs text-emerald-400">
+                      {formatBs(split.amountUsd, rate)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-lg bg-zinc-900 border border-white/10 p-3 space-y-1.5 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-white">{order.paymentMethodName}</span>
+                <span className="font-mono font-bold text-amber-400 tabular-nums">
+                  {formatCurrency(order.total)} · {formatBs(order.total, rate)}
+                </span>
+              </div>
+              {order.cashCurrency && (
+                <p className="text-emerald-300 font-medium">
+                  Moneda en Efectivo:{' '}
+                  {order.cashCurrency === 'VES' ? 'Bolívares (Bs)' : 'Dólares ($)'}
+                </p>
+              )}
+              {order.pagoMovilDetails && (
+                <p className="font-mono text-zinc-300 tabular-nums">
+                  Banco: {order.pagoMovilDetails.bank} · Monto:{' '}
+                  {formatCurrency(order.pagoMovilDetails.amount)} · Ref:{' '}
+                  <strong className="text-amber-400">
+                    #{order.pagoMovilDetails.referenceLast6}
+                  </strong>
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Zelle Capture Preview if attached */}
+          {order.paymentProofName && (
+            <div className="pt-2 border-t border-white/10 space-y-2">
+              <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-300">
+                <FileCheck2 className="w-4 h-4" />
+                <span>Comprobante Zelle adjunto: {order.paymentProofName}</span>
+              </div>
+              {order.paymentProofUrl && (
+                <div>
+                  <img
+                    src={order.paymentProofUrl}
+                    alt="Captura de comprobante Zelle"
+                    className="max-h-44 rounded-lg border border-white/15 object-contain"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="pt-2 border-t border-white/10 flex items-center justify-between">
+            <span className="text-xs text-zinc-400">Total General de la Orden</span>
+            <div className="text-right font-mono tabular-nums">
+              <span className="text-lg font-bold text-white">
+                {formatCurrency(order.total)}
+              </span>
+              <span className="text-xs text-emerald-400 ml-2">
+                ({formatBs(order.total, rate)})
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer Actions: Confirm Order for Cash Closure */}
+        <div className="pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 cursor-pointer"
+          >
+            Cerrar Ventana
+          </button>
+
+          {order.confirmedForClosure ? (
+            <div className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/35 text-xs font-bold text-emerald-300">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span>Pedido Confirmado y Sumado al Cierre de Caja</span>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={handleConfirmForClosure}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white text-xs font-bold shadow-lg cursor-pointer"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>Confirmar Pedido para Cierre de Caja</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function EditOrderModal({
   order,
   onClose,
@@ -162,12 +456,15 @@ export function EditOrderModal({
   order: Order;
   onClose: () => void;
 }) {
-  const { products, paymentMethods, updateOrder, showToast } = useRestaurant();
+  const { products, paymentMethods, bcvRate, updateOrder, showToast } = useRestaurant();
   const [items, setItems] = useState<OrderItem[]>(order.items);
   const [modality, setModality] = useState<OrderModality>(order.modality);
   const [tableNumber, setTableNumber] = useState<number>(order.tableNumber ?? 1);
   const [status, setStatus] = useState<OrderStatus>(order.status);
   const [paymentMethodId, setPaymentMethodId] = useState<string>(order.paymentMethodId);
+  const [cashCurrency, setCashCurrency] = useState<CashCurrency>(
+    order.cashCurrency ?? 'USD'
+  );
   const [notes, setNotes] = useState<string>(order.notes ?? '');
   const [addProductId, setAddProductId] = useState<string>(products[0]?.id ?? '');
 
@@ -187,6 +484,7 @@ export function EditOrderModal({
   const computedTotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
   const selectedPm = paymentMethods.find((p) => p.id === paymentMethodId);
   const isPagoMovil = isPagoMovilMethod(selectedPm?.id, selectedPm?.name);
+  const isEfectivo = isEfectivoMethod(selectedPm?.id, selectedPm?.name);
 
   const handleQtyChange = (idx: number, delta: number) => {
     setItems((prev) =>
@@ -229,6 +527,10 @@ export function EditOrderModal({
       }
     }
 
+    const pmName = isEfectivo
+      ? `Efectivo (${cashCurrency === 'VES' ? 'Bs' : '$'})`
+      : selectedPm?.name ?? order.paymentMethodName;
+
     updateOrder(order.id, {
       items,
       total: computedTotal,
@@ -236,7 +538,8 @@ export function EditOrderModal({
       tableNumber: modality === 'sitio' ? tableNumber : undefined,
       status,
       paymentMethodId: selectedPm?.id ?? order.paymentMethodId,
-      paymentMethodName: selectedPm?.name ?? order.paymentMethodName,
+      paymentMethodName: pmName,
+      cashCurrency: isEfectivo ? cashCurrency : undefined,
       pagoMovilDetails: isPagoMovil
         ? {
             bank: pmBank.trim(),
@@ -329,7 +632,8 @@ export function EditOrderModal({
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-white truncate">{item.name}</p>
                   <p className="text-xs font-mono text-amber-400 tabular-nums">
-                    {formatCurrency(item.price * item.quantity)}
+                    {formatCurrency(item.price * item.quantity)} ·{' '}
+                    {formatBs(item.price * item.quantity, bcvRate)}
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
@@ -367,7 +671,7 @@ export function EditOrderModal({
               >
                 {products.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name} ({formatCurrency(p.price)})
+                    {p.name} ({formatCurrency(p.price)} / {formatBs(p.price, bcvRate)})
                   </option>
                 ))}
               </select>
@@ -411,6 +715,38 @@ export function EditOrderModal({
               />
             </div>
           </div>
+
+          {isEfectivo && (
+            <div className="rounded-xl bg-zinc-950 border border-emerald-500/30 p-3 space-y-2">
+              <span className="block text-xs font-semibold text-emerald-400">
+                Moneda pagada en Efectivo:
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCashCurrency('USD')}
+                  className={`py-2 px-3 rounded-lg text-xs font-bold cursor-pointer ${
+                    cashCurrency === 'USD'
+                      ? 'bg-emerald-500 text-zinc-950'
+                      : 'bg-zinc-900 text-zinc-300 border border-white/10'
+                  }`}
+                >
+                  Dólares ($)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCashCurrency('VES')}
+                  className={`py-2 px-3 rounded-lg text-xs font-bold cursor-pointer ${
+                    cashCurrency === 'VES'
+                      ? 'bg-amber-500 text-zinc-950'
+                      : 'bg-zinc-900 text-zinc-300 border border-white/10'
+                  }`}
+                >
+                  Bolívares (Bs)
+                </button>
+              </div>
+            </div>
+          )}
 
           {isPagoMovil && (
             <div className="rounded-xl bg-zinc-950 border border-amber-500/30 p-3.5 space-y-3">
@@ -469,6 +805,9 @@ export function EditOrderModal({
               <strong className="font-mono text-lg text-white tabular-nums">
                 {formatCurrency(computedTotal)}
               </strong>
+              <span className="font-mono text-xs text-emerald-400 ml-2 tabular-nums">
+                ({formatBs(computedTotal, bcvRate)})
+              </span>
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -670,11 +1009,13 @@ export function DispatchDeliveryModal({
   onClose: () => void;
   onOpenAddDriver: () => void;
 }) {
-  const { drivers, dispatchOrderWithDriver, showToast } = useRestaurant();
+  const { drivers, bcvRate, dispatchOrderWithDriver, showToast } = useRestaurant();
   const [selectedDriverId, setSelectedDriverId] = useState<string>(drivers[0]?.id ?? '');
   const [customerPhone, setCustomerPhone] = useState<string>(order.customerPhone ?? '');
   const [dispatchedState, setDispatchedState] = useState<boolean>(false);
   const [copiedTarget, setCopiedTarget] = useState<'driver' | 'customer' | null>(null);
+
+  const rate = order.bcvRateAtOrder ?? bcvRate;
 
   const selectedDriver =
     drivers.find((d) => d.id === selectedDriverId) ?? drivers[0];
@@ -695,7 +1036,7 @@ export function DispatchDeliveryModal({
       `📍 *Dirección:* ${order.deliveryAddress ?? 'Por confirmar'}\n\n` +
       `🧾 *Detalle del Pedido:*\n${itemsTextList}\n\n` +
       `💳 *Pago:* ${paymentSummaryText}\n` +
-      `💰 *Total:* ${formatCurrency(order.total)}`
+      `💰 *Total:* ${formatCurrency(order.total)} (${formatBs(order.total, rate)})`
     : '';
 
   const customerMessage = selectedDriver
@@ -778,7 +1119,8 @@ export function DispatchDeliveryModal({
               <div className="flex items-center justify-between text-xs text-zinc-400">
                 <span>Detalle del Pedido a Despachar</span>
                 <strong className="font-mono text-amber-400 text-sm tabular-nums">
-                  {formatCurrency(order.total)} · {order.paymentMethodName}
+                  {formatCurrency(order.total)} ({formatBs(order.total, rate)}) ·{' '}
+                  {order.paymentMethodName}
                 </strong>
               </div>
               <ul className="text-xs text-zinc-200 space-y-1 pt-1">

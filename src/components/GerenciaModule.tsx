@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Bike,
@@ -9,14 +9,17 @@ import {
   Copy,
   CreditCard,
   DollarSign,
+  Download,
   Edit3,
   ExternalLink,
+  Eye,
   FileCheck2,
   KeyRound,
   LogOut,
   MessageCircle,
   Phone,
   Plus,
+  QrCode,
   Receipt,
   Share2,
   Trash2,
@@ -25,19 +28,29 @@ import {
   UtensilsCrossed,
   XCircle,
 } from 'lucide-react';
+import QRCode from 'qrcode';
 import { PRESET_PRODUCT_IMAGES } from '../data/initialData';
 import { useRestaurant } from '../context/RestaurantContext';
-import { Order, Product, ProductCategory } from '../types/restaurant';
+import {
+  CashClosureRecord,
+  Order,
+  Product,
+  ProductCategory,
+} from '../types/restaurant';
 import {
   AddDriverModal,
   DispatchDeliveryModal,
   EditOrderModal,
+  OrderCashierDetailModal,
   PasswordsModal,
 } from './GerenciaModals';
 import {
+  BcvRateBanner,
   BrandLogo,
   OrderStatusText,
   SafeProductImage,
+  formatBs,
+  formatBsAmount,
   formatCurrency,
   formatElapsedMinutes,
   formatTime,
@@ -82,6 +95,7 @@ export function GerenciaModule() {
     drivers,
     orders,
     closures,
+    bcvRate,
     addProduct,
     updateProduct,
     deleteProduct,
@@ -91,6 +105,8 @@ export function GerenciaModule() {
     deleteDriver,
     updateOrderStatus,
     cancelOrder,
+    confirmOrderForClosure,
+    confirmAllOpenOrdersForClosure,
     performCashClosure,
     getPublicMenuUrl,
     navigateToModule,
@@ -101,6 +117,9 @@ export function GerenciaModule() {
   const [activeTab, setActiveTab] = useState<GerenciaTab>('caja');
   const [passwordsModalOpen, setPasswordsModalOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+  const [inspectingCashierOrder, setInspectingCashierOrder] = useState<Order | null>(
+    null
+  );
   const [addDriverModalOpen, setAddDriverModalOpen] = useState(false);
   const [dispatchingOrder, setDispatchingOrder] = useState<Order | null>(null);
 
@@ -115,22 +134,57 @@ export function GerenciaModule() {
   // Payment Method Form State
   const [newPmName, setNewPmName] = useState('');
   const [newPmDetails, setNewPmDetails] = useState('');
-  const [newPmRequiresProof, setNewPmRequiresProof] = useState(true);
+  const [newPmRequiresProof, setNewPmRequiresProof] = useState(false);
   const [editingPmId, setEditingPmId] = useState<string | null>(null);
   const [editingPmDetails, setEditingPmDetails] = useState('');
 
-  // WhatsApp & Public Link State
+  // WhatsApp & Public Link + Downloadable QR Code State
   const [waPhone, setWaPhone] = useState('');
   const [waTable, setWaTable] = useState<number | undefined>(undefined);
   const [waMessage, setWaMessage] = useState(
-    '¡Hola! Gracias por preferir a Gordis Burguer. Ingresa a nuestro menú digital para armar tu pedido y enviar tu comprobante de pago:'
+    '¡Hola! Gracias por preferir a Gordis Burguer. Ingresa a nuestro menú digital para armar tu pedido y registrar tu pago:'
   );
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string>('');
 
-  // Live metrics
+  const generatedPublicUrl = getPublicMenuUrl(waTable);
+
+  // Generate downloadable QR code whenever generatedPublicUrl changes
+  useEffect(() => {
+    let active = true;
+    QRCode.toDataURL(generatedPublicUrl, {
+      width: 512,
+      margin: 2,
+      color: {
+        dark: '#0B0C0E',
+        light: '#FFFFFF',
+      },
+    })
+      .then((dataUrl) => {
+        if (active) setQrCodeDataUrl(dataUrl);
+      })
+      .catch(() => {
+        if (active) setQrCodeDataUrl('');
+      });
+    return () => {
+      active = false;
+    };
+  }, [generatedPublicUrl]);
+
+  // Live metrics for Caja Principal
   const openShiftOrders = useMemo(
     () => orders.filter((o) => o.status !== 'cancelado' && !o.closedInShiftId),
     [orders]
+  );
+
+  const confirmedShiftOrders = useMemo(
+    () => openShiftOrders.filter((o) => o.confirmedForClosure),
+    [openShiftOrders]
+  );
+
+  const unconfirmedShiftOrders = useMemo(
+    () => openShiftOrders.filter((o) => !o.confirmedForClosure),
+    [openShiftOrders]
   );
 
   const openShiftTotal = useMemo(
@@ -138,17 +192,212 @@ export function GerenciaModule() {
     [openShiftOrders]
   );
 
-  const salesByMethod = useMemo(() => {
-    const map: Record<string, { count: number; total: number }> = {};
-    for (const ord of openShiftOrders) {
-      if (!map[ord.paymentMethodName]) {
-        map[ord.paymentMethodName] = { count: 0, total: 0 };
+  const confirmedShiftTotal = useMemo(
+    () => confirmedShiftOrders.reduce((sum, o) => sum + o.total, 0),
+    [confirmedShiftOrders]
+  );
+
+  // Detailed breakdown of collected money (Dinero Recaudado) across confirmed orders
+  const collectedBreakdown = useMemo(() => {
+    const map: Record<string, { count: number; totalUsd: number; totalBs: number }> = {};
+    let efectivoUsd = 0;
+    let efectivoBs = 0;
+    let pagoMovilUsd = 0;
+    let pagoMovilBs = 0;
+    let zelleUsd = 0;
+    let tarjetaUsd = 0;
+
+    for (const ord of confirmedShiftOrders) {
+      const rate = ord.bcvRateAtOrder ?? bcvRate;
+      if (ord.payments && ord.payments.length > 0) {
+        for (const sp of ord.payments) {
+          const label =
+            sp.methodId === 'pm-efectivo'
+              ? `Efectivo (${sp.cashCurrency === 'VES' ? 'Bs' : '$'})`
+              : sp.methodName;
+          if (!map[label]) {
+            map[label] = { count: 0, totalUsd: 0, totalBs: 0 };
+          }
+          map[label].count += 1;
+          map[label].totalUsd += sp.amountUsd;
+          map[label].totalBs += sp.amountBs || sp.amountUsd * rate;
+
+          const lower = sp.methodName.toLowerCase();
+          if (sp.methodId === 'pm-efectivo' || lower.includes('efectivo')) {
+            if (sp.cashCurrency === 'VES') {
+              efectivoBs += sp.amountBs || sp.amountUsd * rate;
+            } else {
+              efectivoUsd += sp.amountUsd;
+            }
+          } else if (
+            sp.methodId === 'pm-pago-movil' ||
+            lower.includes('pago móvil') ||
+            lower.includes('pago movil')
+          ) {
+            pagoMovilUsd += sp.amountUsd;
+            pagoMovilBs += sp.amountBs || sp.amountUsd * rate;
+          } else if (sp.methodId === 'pm-zelle' || lower.includes('zelle')) {
+            zelleUsd += sp.amountUsd;
+          } else if (sp.methodId === 'pm-tarjeta' || lower.includes('tarjeta')) {
+            tarjetaUsd += sp.amountUsd;
+          }
+        }
+      } else {
+        const label = ord.paymentMethodName;
+        if (!map[label]) {
+          map[label] = { count: 0, totalUsd: 0, totalBs: 0 };
+        }
+        map[label].count += 1;
+        map[label].totalUsd += ord.total;
+        map[label].totalBs += ord.total * rate;
+
+        const lower = ord.paymentMethodName.toLowerCase();
+        if (ord.paymentMethodId === 'pm-efectivo' || lower.includes('efectivo')) {
+          if (ord.cashCurrency === 'VES') {
+            efectivoBs += ord.total * rate;
+          } else {
+            efectivoUsd += ord.total;
+          }
+        } else if (
+          ord.paymentMethodId === 'pm-pago-movil' ||
+          lower.includes('pago móvil') ||
+          lower.includes('pago movil')
+        ) {
+          pagoMovilUsd += ord.total;
+          pagoMovilBs += ord.total * rate;
+        } else if (ord.paymentMethodId === 'pm-zelle' || lower.includes('zelle')) {
+          zelleUsd += ord.total;
+        } else if (ord.paymentMethodId === 'pm-tarjeta' || lower.includes('tarjeta')) {
+          tarjetaUsd += ord.total;
+        }
       }
-      map[ord.paymentMethodName].count += 1;
-      map[ord.paymentMethodName].total += ord.total;
     }
-    return map;
-  }, [openShiftOrders]);
+
+    return {
+      byMethod: map,
+      efectivoUsd,
+      efectivoBs,
+      pagoMovilUsd,
+      pagoMovilBs,
+      zelleUsd,
+      tarjetaUsd,
+    };
+  }, [confirmedShiftOrders, bcvRate]);
+
+  // Export Cash Closure Summary (Current Shift or Past Closure Record)
+  const handleExportCashClosureSummary = (closureRecord?: CashClosureRecord) => {
+    const nowStr = new Date().toLocaleString('es-VE');
+    let lines: string[] = [];
+
+    if (closureRecord) {
+      const rate = closureRecord.bcvRate || bcvRate;
+      const totalBs = closureRecord.totalSalesBs || closureRecord.totalSales * rate;
+      lines = [
+        '==============================================================',
+        '         GORDIS BURGUER - RESUMEN DE CIERRE DE CAJA           ',
+        '==============================================================',
+        `ID de Cierre:       ${closureRecord.id}`,
+        `Fecha de Cierre:    ${new Date(closureRecord.closedAt).toLocaleString('es-VE')}`,
+        `Responsable:        ${closureRecord.closedBy}`,
+        `Tasa Oficial BCV:   Bs. ${rate.toFixed(2)} / $1.00`,
+        '--------------------------------------------------------------',
+        '1. TOTALIDAD VENDIDA',
+        `   Pedidos Cerrados:        ${closureRecord.orderCount}`,
+        `   Total Vendido ($):       ${formatCurrency(closureRecord.totalSales)}`,
+        `   Total Vendido (Bs BCV):  ${formatBsAmount(totalBs)}`,
+        '--------------------------------------------------------------',
+        '2. DINERO RECAUDADO POR MÉTODO DE PAGO',
+        ...Object.entries(closureRecord.byMethod).map(
+          ([method, amtUsd]) =>
+            `   • ${method.padEnd(26, ' ')}: ${formatCurrency(amtUsd)} (${formatBs(amtUsd, rate)})`
+        ),
+      ];
+
+      if (closureRecord.byCurrencySummary) {
+        const s = closureRecord.byCurrencySummary;
+        lines.push(
+          '--------------------------------------------------------------',
+          '3. ARQUEO DE DINERO RECAUDADO POR MONEDA',
+          `   • Efectivo en Dólares ($):   ${formatCurrency(s.efectivoUsd)}`,
+          `   • Efectivo en Bolívares (Bs): ${formatBsAmount(s.efectivoBs)}`,
+          `   • Pago Móvil Recaudado:      ${formatCurrency(s.pagoMovilUsd)} (${formatBsAmount(s.pagoMovilBs)})`,
+          `   • Zelle Recaudado ($):       ${formatCurrency(s.zelleUsd)}`,
+          `   • Punto de Venta / Tarjeta:  ${formatCurrency(s.tarjetaUsd)} (${formatBs(s.tarjetaUsd, rate)})`
+        );
+      }
+
+      lines.push('==============================================================');
+    } else {
+      // Export current shift summary
+      const targetOrders =
+        confirmedShiftOrders.length > 0 ? confirmedShiftOrders : openShiftOrders;
+      if (targetOrders.length === 0) {
+        showToast('No hay pedidos en el turno actual para exportar.', 'error');
+        return;
+      }
+
+      const totalUsd = targetOrders.reduce((acc, o) => acc + o.total, 0);
+      const totalBs = totalUsd * bcvRate;
+
+      lines = [
+        '==============================================================',
+        '     GORDIS BURGUER - REPORTE DE CIERRE DE CAJA (TURNO)       ',
+        '==============================================================',
+        `Fecha de Emisión:   ${nowStr}`,
+        `Tasa Oficial BCV:   Bs. ${bcvRate.toFixed(2)} / $1.00`,
+        `Estado de Órdenes:  ${
+          confirmedShiftOrders.length > 0
+            ? `${confirmedShiftOrders.length} pedidos confirmados en Caja`
+            : `${openShiftOrders.length} pedidos abiertos del turno`
+        }`,
+        '--------------------------------------------------------------',
+        '1. TOTALIDAD VENDIDA',
+        `   Cantidad de Pedidos:     ${targetOrders.length}`,
+        `   Totalidad Vendida ($):   ${formatCurrency(totalUsd)}`,
+        `   Totalidad Vendida (Bs):  ${formatBsAmount(totalBs)}`,
+        '--------------------------------------------------------------',
+        '2. DINERO RECAUDADO POR MÉTODO Y MONEDA',
+        `   • Efectivo en Dólares ($):    ${formatCurrency(collectedBreakdown.efectivoUsd)}`,
+        `   • Efectivo en Bolívares (Bs): ${formatBsAmount(collectedBreakdown.efectivoBs)}`,
+        `   • Pago Móvil:                 ${formatCurrency(collectedBreakdown.pagoMovilUsd)} (${formatBsAmount(collectedBreakdown.pagoMovilBs)})`,
+        `   • Zelle ($):                  ${formatCurrency(collectedBreakdown.zelleUsd)}`,
+        `   • Tarjeta / Punto de Venta:   ${formatCurrency(collectedBreakdown.tarjetaUsd)} (${formatBs(collectedBreakdown.tarjetaUsd, bcvRate)})`,
+        '--------------------------------------------------------------',
+        '3. DETALLE DE PEDIDOS INCLUIDOS',
+        ...targetOrders.map((ord) => {
+          const r = ord.bcvRateAtOrder ?? bcvRate;
+          const itemsStr = ord.items.map((i) => `${i.quantity}x ${i.name}`).join(', ');
+          const pmInfo = ord.pagoMovilDetails
+            ? ` [Banco: ${ord.pagoMovilDetails.bank}, Ref: #${ord.pagoMovilDetails.referenceLast6}]`
+            : '';
+          return `   • ${ord.code} (${formatTime(ord.createdAt)}) | ${modalityLabel(
+            ord.modality,
+            ord.tableNumber
+          )} | ${ord.paymentMethodName}${pmInfo} | ${formatCurrency(ord.total)} (${formatBs(
+            ord.total,
+            r
+          )}) | Platos: ${itemsStr}`;
+        }),
+        '==============================================================',
+      ];
+    }
+
+    const content = lines.join('\n');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 10);
+    link.href = url;
+    link.download = closureRecord
+      ? `resumen-${closureRecord.id}-${stamp}.txt`
+      : `resumen-cierre-caja-gordis-${stamp}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    showToast('Resumen de Cierre de Caja exportado correctamente.', 'success');
+  };
 
   // Kanban groups
   const pendingOrders = useMemo(
@@ -255,8 +504,6 @@ export function GerenciaModule() {
     setNewPmDetails('');
   };
 
-  const generatedPublicUrl = getPublicMenuUrl(waTable);
-
   const handleCopyPublicUrl = async () => {
     try {
       await navigator.clipboard.writeText(generatedPublicUrl);
@@ -274,90 +521,112 @@ export function GerenciaModule() {
     ? `https://wa.me/${cleanWaPhone}?text=${fullWaText}`
     : `https://wa.me/?text=${fullWaText}`;
 
-  const renderKanbanCard = (order: Order) => (
-    <div
-      key={order.id}
-      className="rounded-xl bg-zinc-950/90 border border-white/10 p-4 space-y-3"
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-sm font-bold text-white tabular-nums">
-              {order.code}
-            </span>
-            <span className="text-zinc-600">·</span>
-            <span className="text-xs font-semibold text-amber-400">
-              {modalityLabel(order.modality, order.tableNumber)}
+  const renderKanbanCard = (order: Order) => {
+    const rate = order.bcvRateAtOrder ?? bcvRate;
+    return (
+      <div
+        key={order.id}
+        className="rounded-xl bg-zinc-950/90 border border-white/10 p-4 space-y-3"
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-sm font-bold text-white tabular-nums">
+                {order.code}
+              </span>
+              <span className="text-zinc-600">·</span>
+              <span className="text-xs font-semibold text-amber-400">
+                {modalityLabel(order.modality, order.tableNumber)}
+              </span>
+            </div>
+            <p className="text-[11px] text-zinc-400 mt-0.5 tabular-nums">
+              {formatTime(order.createdAt)} ·{' '}
+              {order.source === 'mesera' ? 'Mesera' : 'Menú Público'}
+              {order.customerName ? ` · ${order.customerName}` : ''}
+            </p>
+          </div>
+          <OrderStatusText status={order.status} />
+        </div>
+
+        {order.isModifiedAfterConfirm && (
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-2.5 py-1">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span>
+              Modificado tras confirmar ({formatTime(order.modifiedAt ?? order.updatedAt)})
             </span>
           </div>
-          <p className="text-[11px] text-zinc-400 mt-0.5 tabular-nums">
-            {formatTime(order.createdAt)} · {order.source === 'mesera' ? 'Mesera' : 'Menú Público'}
-            {order.customerName ? ` · ${order.customerName}` : ''}
-          </p>
-        </div>
-        <OrderStatusText status={order.status} />
-      </div>
+        )}
 
-      {order.isModifiedAfterConfirm && (
-        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-2.5 py-1">
-          <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span>Modificado tras confirmar ({formatTime(order.modifiedAt ?? order.updatedAt)})</span>
-        </div>
-      )}
+        <ul className="space-y-1 text-xs text-zinc-200 border-t border-white/5 pt-2.5">
+          {order.items.map((it, idx) => (
+            <li key={idx} className="flex justify-between gap-2">
+              <span className="truncate">
+                <strong className="font-mono text-amber-400">{it.quantity}x</strong>{' '}
+                {it.name}
+              </span>
+              <span className="font-mono text-zinc-400 tabular-nums shrink-0">
+                {formatCurrency(it.price * it.quantity)}
+              </span>
+            </li>
+          ))}
+        </ul>
 
-      <ul className="space-y-1 text-xs text-zinc-200 border-t border-white/5 pt-2.5">
-        {order.items.map((it, idx) => (
-          <li key={idx} className="flex justify-between gap-2">
-            <span className="truncate">
-              <strong className="font-mono text-amber-400">{it.quantity}x</strong> {it.name}
+        {order.pagoMovilDetails && (
+          <div className="text-[11px] text-zinc-300 bg-zinc-900/90 rounded-lg px-2.5 py-1.5 border border-white/5 font-mono tabular-nums">
+            {order.pagoMovilDetails.bank} · Monto:{' '}
+            {formatCurrency(order.pagoMovilDetails.amount)} · Ref:{' '}
+            <strong className="text-amber-400">
+              {order.pagoMovilDetails.referenceLast6}
+            </strong>
+          </div>
+        )}
+
+        <div className="flex items-center justify-between pt-2.5 border-t border-white/10 text-xs">
+          <div className="text-zinc-400">
+            <span>{order.paymentMethodName} · </span>
+            <strong className="font-mono text-white tabular-nums">
+              {formatCurrency(order.total)}
+            </strong>
+            <span className="block font-mono text-[11px] text-emerald-400 tabular-nums">
+              {formatBs(order.total, rate)}
             </span>
-            <span className="font-mono text-zinc-400 tabular-nums shrink-0">
-              {formatCurrency(it.price * it.quantity)}
-            </span>
-          </li>
-        ))}
-      </ul>
+          </div>
 
-      {order.pagoMovilDetails && (
-        <div className="text-[11px] text-zinc-300 bg-zinc-900/90 rounded-lg px-2.5 py-1.5 border border-white/5 font-mono tabular-nums">
-          {order.pagoMovilDetails.bank} · Monto: {formatCurrency(order.pagoMovilDetails.amount)} · Ref:{' '}
-          <strong className="text-amber-400">{order.pagoMovilDetails.referenceLast6}</strong>
-        </div>
-      )}
-
-      <div className="flex items-center justify-between pt-2.5 border-t border-white/10 text-xs">
-        <div className="text-zinc-400">
-          <span>{order.paymentMethodName} · </span>
-          <strong className="font-mono text-white tabular-nums">
-            {formatCurrency(order.total)}
-          </strong>
-        </div>
-
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => setEditingOrder(order)}
-            className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 hover:text-amber-400 transition-colors cursor-pointer"
-            title="Editar pedido"
-            aria-label={`Editar pedido ${order.code}`}
-          >
-            <Edit3 className="w-3.5 h-3.5" />
-          </button>
-          {order.status !== 'cancelado' && (
+          <div className="flex items-center gap-1.5">
             <button
               type="button"
-              onClick={() => cancelOrder(order.id)}
-              className="p-1.5 rounded-lg bg-zinc-900 hover:bg-red-950/60 border border-white/10 text-zinc-300 hover:text-red-400 transition-colors cursor-pointer"
-              title="Cancelar pedido"
-              aria-label={`Cancelar pedido ${order.code}`}
+              onClick={() => setInspectingCashierOrder(order)}
+              className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 hover:text-emerald-400 transition-colors cursor-pointer"
+              title="Ver descripción y pago confirmado"
+              aria-label={`Ver detalle ${order.code}`}
             >
-              <XCircle className="w-3.5 h-3.5" />
+              <Eye className="w-3.5 h-3.5" />
             </button>
-          )}
+            <button
+              type="button"
+              onClick={() => setEditingOrder(order)}
+              className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 hover:text-amber-400 transition-colors cursor-pointer"
+              title="Editar pedido"
+              aria-label={`Editar pedido ${order.code}`}
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+            </button>
+            {order.status !== 'cancelado' && (
+              <button
+                type="button"
+                onClick={() => cancelOrder(order.id)}
+                className="p-1.5 rounded-lg bg-zinc-900 hover:bg-red-950/60 border border-white/10 text-zinc-300 hover:text-red-400 transition-colors cursor-pointer"
+                title="Cancelar pedido"
+                aria-label={`Cancelar pedido ${order.code}`}
+              >
+                <XCircle className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="min-h-screen bg-[#0B0C0E] text-zinc-100 flex">
@@ -428,6 +697,10 @@ export function GerenciaModule() {
           </div>
 
           <div className="flex items-center gap-2.5 shrink-0">
+            <div className="hidden md:block">
+              <BcvRateBanner editable />
+            </div>
+
             <button
               type="button"
               onClick={() => setPasswordsModalOpen(true)}
@@ -481,66 +754,149 @@ export function GerenciaModule() {
         </div>
 
         <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-6 space-y-6">
-          {/* 1. CAJA PRINCIPAL (CIERRE DE DÍA Y CAMPOS PAGO MÓVIL) */}
+          {/* Mobile BCV Banner */}
+          <div className="md:hidden">
+            <BcvRateBanner editable />
+          </div>
+
+          {/* 1. CAJA PRINCIPAL (CONFIRMACIÓN DE PEDIDOS, MODAL DE DETALLE Y EXPORTACIÓN DE CIERRE) */}
           {activeTab === 'caja' && (
             <section className="space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div>
                   <h1 className="font-display text-2xl font-bold text-white">
                     Caja Principal & Cierre de Día
                   </h1>
                   <p className="text-sm text-zinc-400 mt-1">
-                    Registro en tiempo real de pedidos facturados, verificación de Pago Móvil y desglose por métodos de pago
+                    Revisa la descripción y el pago confirmado de cada pedido, confírmalos para el cierre de caja y exporta el resumen financiero ($ / Bs BCV)
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={performCashClosure}
-                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 text-white text-sm font-bold shadow-lg cursor-pointer whitespace-nowrap shrink-0"
-                >
-                  <Receipt className="w-4 h-4" />
-                  <span>Realizar Cierre de Caja</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                  {unconfirmedShiftOrders.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={confirmAllOpenOrdersForClosure}
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-emerald-500/35 text-xs font-bold text-emerald-300 cursor-pointer whitespace-nowrap"
+                    >
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      <span>
+                        Confirmar Todos ({unconfirmedShiftOrders.length})
+                      </span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => handleExportCashClosureSummary()}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-amber-500/35 text-xs font-bold text-amber-300 cursor-pointer whitespace-nowrap"
+                  >
+                    <Download className="w-4 h-4 text-amber-400" />
+                    <span>Exportar Resumen de Cierre</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={performCashClosure}
+                    className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 text-white text-xs sm:text-sm font-bold shadow-lg cursor-pointer whitespace-nowrap"
+                  >
+                    <Receipt className="w-4 h-4" />
+                    <span>
+                      Realizar Cierre de Caja ({confirmedShiftOrders.length})
+                    </span>
+                  </button>
+                </div>
               </div>
 
-              {/* Financial Summary Strip */}
+              {/* Financial Summary Strip ($ and Bs BCV) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="rounded-2xl bg-zinc-900/90 border border-amber-500/35 p-5">
-                  <p className="text-xs text-zinc-400">Total Ventas del Turno</p>
-                  <p className="font-mono text-3xl font-bold text-amber-400 mt-1 tabular-nums">
+                <div className="rounded-2xl bg-zinc-900/90 border border-emerald-500/40 p-5">
+                  <p className="text-xs text-zinc-400">
+                    Totalidad Vendida (Confirmados para Cierre)
+                  </p>
+                  <p className="font-mono text-2xl sm:text-3xl font-bold text-emerald-400 mt-1 tabular-nums">
+                    {formatCurrency(confirmedShiftTotal)}
+                  </p>
+                  <p className="font-mono text-xs text-zinc-200 mt-0.5 tabular-nums">
+                    {formatBs(confirmedShiftTotal, bcvRate)}
+                  </p>
+                  <p className="text-[11px] text-zinc-400 mt-1.5 tabular-nums">
+                    {confirmedShiftOrders.length} de {openShiftOrders.length} pedidos confirmados
+                  </p>
+                </div>
+
+                <div className="rounded-2xl bg-zinc-900/80 border border-amber-500/35 p-5">
+                  <p className="text-xs text-zinc-400">
+                    Total Facturado del Turno (Abiertos)
+                  </p>
+                  <p className="font-mono text-2xl sm:text-3xl font-bold text-amber-400 mt-1 tabular-nums">
                     {formatCurrency(openShiftTotal)}
                   </p>
-                  <p className="text-xs text-zinc-400 mt-1 tabular-nums">
-                    {openShiftOrders.length} pedidos válidos abiertos
+                  <p className="font-mono text-xs text-zinc-200 mt-0.5 tabular-nums">
+                    {formatBs(openShiftTotal, bcvRate)}
+                  </p>
+                  <p className="text-[11px] text-zinc-400 mt-1.5 tabular-nums">
+                    {unconfirmedShiftOrders.length} pendientes por confirmar en caja
                   </p>
                 </div>
 
-                {Object.entries(salesByMethod).map(([methodName, data]) => (
-                  <div
-                    key={methodName}
-                    className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5"
-                  >
-                    <p className="text-xs text-zinc-400 truncate">{methodName}</p>
-                    <p className="font-mono text-2xl font-bold text-white mt-1 tabular-nums">
-                      {formatCurrency(data.total)}
-                    </p>
-                    <p className="text-xs text-zinc-500 mt-1 tabular-nums">
-                      {data.count} {data.count === 1 ? 'transacción' : 'transacciones'}
-                    </p>
+                <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5">
+                  <p className="text-xs text-zinc-400">
+                    Dinero Recaudado en Efectivo ($ / Bs)
+                  </p>
+                  <div className="mt-1.5 space-y-1 font-mono tabular-nums">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-zinc-400 font-sans">Efectivo $:</span>
+                      <strong className="text-white text-sm">
+                        {formatCurrency(collectedBreakdown.efectivoUsd)}
+                      </strong>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-zinc-400 font-sans">Efectivo Bs:</span>
+                      <strong className="text-amber-400 text-sm">
+                        {formatBsAmount(collectedBreakdown.efectivoBs)}
+                      </strong>
+                    </div>
                   </div>
-                ))}
+                </div>
+
+                <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5">
+                  <p className="text-xs text-zinc-400">
+                    Dinero Recaudado Digital (Pago Móvil / Zelle / POS)
+                  </p>
+                  <div className="mt-1.5 space-y-1 font-mono text-xs tabular-nums">
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-400 font-sans">Pago Móvil:</span>
+                      <strong className="text-amber-300">
+                        {formatCurrency(collectedBreakdown.pagoMovilUsd)} (
+                        {formatBsAmount(collectedBreakdown.pagoMovilBs)})
+                      </strong>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-400 font-sans">Zelle:</span>
+                      <strong className="text-white">
+                        {formatCurrency(collectedBreakdown.zelleUsd)}
+                      </strong>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-400 font-sans">Tarjeta / POS:</span>
+                      <strong className="text-white">
+                        {formatCurrency(collectedBreakdown.tarjetaUsd)}
+                      </strong>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {/* Live Billed Orders Table with Pago Móvil Details */}
+              {/* Live Billed Orders Table with Action Buttons (Ver Pedido y Pago + Confirmar Pedido) */}
               <div className="rounded-2xl bg-zinc-900/70 border border-white/10 overflow-hidden">
-                <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
+                <div className="px-5 py-4 border-b border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div>
                     <h2 className="font-display text-base font-bold text-white">
-                      Pedidos Facturados del Turno Actual
+                      Pedidos del Turno Actual
                     </h2>
                     <p className="text-xs text-zinc-400 mt-0.5">
-                      Incluye desglose de Banco, Monto y Referencia (6 últimos dígitos) en pagos vía Pago Móvil
+                      Inspecciona la descripción completa y el pago confirmado de cada orden, y confírmala para sumarla al cierre de caja
                     </p>
                   </div>
                   <span className="font-mono text-xs text-zinc-400 tabular-nums">
@@ -553,106 +909,186 @@ export function GerenciaModule() {
                     <thead className="bg-zinc-950/80 text-zinc-400 border-b border-white/10">
                       <tr>
                         <th className="py-3 px-4 font-semibold">Código</th>
-                        <th className="py-3 px-4 font-semibold">Hora</th>
                         <th className="py-3 px-4 font-semibold">Modalidad</th>
                         <th className="py-3 px-4 font-semibold">Método de Pago</th>
                         <th className="py-3 px-4 font-semibold">
-                          Datos Pago Móvil (Banco / Monto / Ref 6 dígitos)
+                          Detalle Pago Móvil / Efectivo ($/Bs)
                         </th>
-                        <th className="py-3 px-4 font-semibold">Estado</th>
-                        <th className="py-3 px-4 font-semibold text-right">Monto Orden</th>
+                        <th className="py-3 px-4 font-semibold text-right">
+                          Monto ($ / Bs BCV)
+                        </th>
+                        <th className="py-3 px-4 font-semibold text-center">
+                          Acciones de Caja
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
                       {openShiftOrders.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="py-8 text-center text-zinc-500">
+                          <td colSpan={6} className="py-8 text-center text-zinc-500">
                             No hay pedidos abiertos pendientes por cerrar.
                           </td>
                         </tr>
                       ) : (
-                        openShiftOrders.map((ord) => (
-                          <tr key={ord.id} className="hover:bg-white/[0.02]">
-                            <td className="py-3 px-4 font-mono font-bold text-white tabular-nums">
-                              {ord.code}
-                            </td>
-                            <td className="py-3 px-4 font-mono text-zinc-400 tabular-nums">
-                              {formatTime(ord.createdAt)}
-                            </td>
-                            <td className="py-3 px-4 text-zinc-200">
-                              {modalityLabel(ord.modality, ord.tableNumber)}
-                            </td>
-                            <td className="py-3 px-4 text-zinc-200 font-medium">
-                              {ord.paymentMethodName}
-                            </td>
-                            <td className="py-3 px-4">
-                              {ord.pagoMovilDetails ? (
-                                <div className="inline-flex flex-wrap items-center gap-2 text-xs font-mono tabular-nums text-zinc-200 bg-zinc-950/90 border border-amber-500/25 rounded-lg px-2.5 py-1">
-                                  <span>
-                                    <span className="text-zinc-400 font-sans">Banco:</span>{' '}
-                                    {ord.pagoMovilDetails.bank}
-                                  </span>
-                                  <span className="text-zinc-600">·</span>
-                                  <span>
-                                    <span className="text-zinc-400 font-sans">Monto:</span>{' '}
-                                    <strong className="text-emerald-400">
-                                      {formatCurrency(ord.pagoMovilDetails.amount)}
-                                    </strong>
-                                  </span>
-                                  <span className="text-zinc-600">·</span>
-                                  <span>
-                                    <span className="text-zinc-400 font-sans">Ref:</span>{' '}
-                                    <strong className="text-amber-400">
-                                      #{ord.pagoMovilDetails.referenceLast6}
-                                    </strong>
-                                  </span>
+                        openShiftOrders.map((ord) => {
+                          const rate = ord.bcvRateAtOrder ?? bcvRate;
+                          return (
+                            <tr
+                              key={ord.id}
+                              className={`hover:bg-white/[0.02] ${
+                                ord.confirmedForClosure ? 'bg-emerald-950/10' : ''
+                              }`}
+                            >
+                              <td className="py-3 px-4">
+                                <span className="font-mono font-bold text-white tabular-nums">
+                                  {ord.code}
+                                </span>
+                                <span className="block font-mono text-[11px] text-zinc-400 tabular-nums">
+                                  {formatTime(ord.createdAt)}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-zinc-200">
+                                <div>{modalityLabel(ord.modality, ord.tableNumber)}</div>
+                                <div className="mt-0.5">
+                                  <OrderStatusText status={ord.status} />
                                 </div>
-                              ) : (
-                                <span className="text-xs text-zinc-500">—</span>
-                              )}
-                            </td>
-                            <td className="py-3 px-4">
-                              <OrderStatusText status={ord.status} />
-                            </td>
-                            <td className="py-3 px-4 text-right font-mono font-bold text-amber-400 tabular-nums">
-                              {formatCurrency(ord.total)}
-                            </td>
-                          </tr>
-                        ))
+                              </td>
+                              <td className="py-3 px-4 text-zinc-200 font-medium">
+                                {ord.paymentMethodName}
+                                {ord.payments && ord.payments.length > 1 && (
+                                  <span className="block text-[11px] text-amber-400">
+                                    {ord.payments.length} pagos combinados
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4">
+                                <div className="space-y-1">
+                                  {ord.pagoMovilDetails && (
+                                    <div className="inline-flex flex-wrap items-center gap-1.5 text-xs font-mono tabular-nums text-zinc-200 bg-zinc-950/90 border border-amber-500/25 rounded-lg px-2.5 py-1">
+                                      <span>{ord.pagoMovilDetails.bank}</span>
+                                      <span className="text-zinc-600">·</span>
+                                      <strong className="text-emerald-400">
+                                        {formatCurrency(ord.pagoMovilDetails.amount)}
+                                      </strong>
+                                      <span className="text-zinc-600">·</span>
+                                      <strong className="text-amber-400">
+                                        Ref #{ord.pagoMovilDetails.referenceLast6}
+                                      </strong>
+                                    </div>
+                                  )}
+                                  {ord.cashCurrency && (
+                                    <div className="text-xs text-emerald-300 font-medium">
+                                      Efectivo pagado en:{' '}
+                                      <strong>
+                                        {ord.cashCurrency === 'VES'
+                                          ? 'Bolívares (Bs)'
+                                          : 'Dólares ($)'}
+                                      </strong>
+                                    </div>
+                                  )}
+                                  {!ord.pagoMovilDetails && !ord.cashCurrency && (
+                                    <span className="text-xs text-zinc-500">
+                                      {ord.paymentProofName
+                                        ? `Capture Zelle: ${ord.paymentProofName}`
+                                        : 'Pago directo'}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="py-3 px-4 text-right font-mono tabular-nums">
+                                <span className="block font-bold text-amber-400">
+                                  {formatCurrency(ord.total)}
+                                </span>
+                                <span className="block text-xs text-zinc-300">
+                                  {formatBs(ord.total, rate)}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4">
+                                <div className="flex items-center justify-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setInspectingCashierOrder(ord)}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-xs font-semibold text-zinc-100 cursor-pointer whitespace-nowrap"
+                                    title="Abrir ventana con descripción del pedido y método de pago confirmado"
+                                  >
+                                    <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                    <span>Ver Pedido y Pago</span>
+                                  </button>
+
+                                  {ord.confirmedForClosure ? (
+                                    <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/35 text-xs font-bold text-emerald-300 whitespace-nowrap">
+                                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                      <span>Confirmado</span>
+                                    </span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => confirmOrderForClosure(ord.id)}
+                                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-sm transition-colors cursor-pointer whitespace-nowrap"
+                                      title="Confirmar pedido para sumarlo al cierre de caja"
+                                    >
+                                      <Check className="w-3.5 h-3.5" />
+                                      <span>Confirmar Pedido</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
                 </div>
               </div>
 
-              {/* Historical Closures */}
+              {/* Historical Closures with Export Button */}
               {closures.length > 0 && (
                 <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5 space-y-3">
                   <h2 className="font-display text-base font-bold text-white">
-                    Historial de Cierres de Caja
+                    Historial de Cierres de Caja Realizados
                   </h2>
                   <div className="space-y-3">
-                    {closures.map((c) => (
-                      <div
-                        key={c.id}
-                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                      >
-                        <div>
-                          <p className="text-sm font-semibold text-white">
-                            Cierre del {new Date(c.closedAt).toLocaleString('es-VE')}
-                          </p>
-                          <p className="text-xs text-zinc-400 mt-1">
-                            {c.orderCount} pedidos ·{' '}
-                            {Object.entries(c.byMethod)
-                              .map(([m, amt]) => `${m}: ${formatCurrency(amt)}`)
-                              .join(' · ')}
-                          </p>
+                    {closures.map((c) => {
+                      const rate = c.bcvRate || bcvRate;
+                      const totalBs = c.totalSalesBs || c.totalSales * rate;
+                      return (
+                        <div
+                          key={c.id}
+                          className="rounded-xl bg-zinc-950 border border-white/10 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                        >
+                          <div>
+                            <p className="text-sm font-semibold text-white">
+                              Cierre del {new Date(c.closedAt).toLocaleString('es-VE')}
+                            </p>
+                            <p className="text-xs text-zinc-400 mt-1">
+                              {c.orderCount} pedidos confirmados ·{' '}
+                              {Object.entries(c.byMethod)
+                                .map(([m, amt]) => `${m}: ${formatCurrency(amt)}`)
+                                .join(' · ')}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <div className="text-right font-mono tabular-nums">
+                              <span className="block text-lg font-bold text-emerald-400">
+                                {formatCurrency(c.totalSales)}
+                              </span>
+                              <span className="block text-xs text-zinc-300">
+                                {formatBsAmount(totalBs)}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleExportCashClosureSummary(c)}
+                              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-amber-500/35 text-xs font-semibold text-amber-300 cursor-pointer"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              <span>Exportar</span>
+                            </button>
+                          </div>
                         </div>
-                        <span className="font-mono text-xl font-bold text-emerald-400 tabular-nums shrink-0">
-                          {formatCurrency(c.totalSales)}
-                        </span>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -682,7 +1118,7 @@ export function GerenciaModule() {
                   <span>
                     Caja abierta:{' '}
                     <strong className="text-emerald-400">
-                      {formatCurrency(openShiftTotal)}
+                      {formatCurrency(openShiftTotal)} ({formatBs(openShiftTotal, bcvRate)})
                     </strong>
                   </span>
                 </div>
@@ -840,7 +1276,8 @@ export function GerenciaModule() {
                             {ord.code}
                           </span>
                           <span className="text-xs text-zinc-400 ml-2">
-                            {modalityLabel(ord.modality, ord.tableNumber)} · {ord.items.length} ítems
+                            {modalityLabel(ord.modality, ord.tableNumber)} · {ord.items.length}{' '}
+                            ítems
                           </span>
                         </div>
                         <OrderStatusText status={ord.status} />
@@ -938,68 +1375,80 @@ export function GerenciaModule() {
                       No hay pedidos de delivery pendientes por despachar.
                     </p>
                   ) : (
-                    deliveryPending.map((ord) => (
-                      <div
-                        key={ord.id}
-                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 space-y-3"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <span className="font-mono text-base font-bold text-white tabular-nums">
-                              {ord.code}
-                            </span>
-                            <span className="text-zinc-500 mx-2">·</span>
-                            <span className="text-sm font-semibold text-white">
-                              {ord.customerName ?? 'Cliente Delivery'}
-                            </span>
-                            <p className="text-xs text-zinc-400 mt-0.5">
-                              Tel: {ord.customerPhone ?? 'N/D'} · {ord.deliveryAddress ?? 'Sin dirección'}
-                            </p>
+                    deliveryPending.map((ord) => {
+                      const rate = ord.bcvRateAtOrder ?? bcvRate;
+                      return (
+                        <div
+                          key={ord.id}
+                          className="rounded-xl bg-zinc-950 border border-white/10 p-4 space-y-3"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <span className="font-mono text-base font-bold text-white tabular-nums">
+                                {ord.code}
+                              </span>
+                              <span className="text-zinc-500 mx-2">·</span>
+                              <span className="text-sm font-semibold text-white">
+                                {ord.customerName ?? 'Cliente Delivery'}
+                              </span>
+                              <p className="text-xs text-zinc-400 mt-0.5">
+                                Tel: {ord.customerPhone ?? 'N/D'} ·{' '}
+                                {ord.deliveryAddress ?? 'Sin dirección'}
+                              </p>
+                            </div>
+                            <OrderStatusText status={ord.status} />
                           </div>
-                          <OrderStatusText status={ord.status} />
-                        </div>
 
-                        <div className="text-xs text-zinc-300 space-y-1">
-                          {ord.items.map((it, idx) => (
-                            <p key={idx}>
-                              <strong className="font-mono text-amber-400">{it.quantity}x</strong>{' '}
-                              {it.name}
-                            </p>
-                          ))}
-                        </div>
-
-                        {ord.pagoMovilDetails && (
-                          <div className="text-xs font-mono text-zinc-300 bg-zinc-900 rounded-lg px-2.5 py-1.5 border border-white/5 tabular-nums">
-                            Pago Móvil: {ord.pagoMovilDetails.bank} ·{' '}
-                            {formatCurrency(ord.pagoMovilDetails.amount)} · Ref:{' '}
-                            <strong className="text-amber-400">
-                              #{ord.pagoMovilDetails.referenceLast6}
-                            </strong>
+                          <div className="text-xs text-zinc-300 space-y-1">
+                            {ord.items.map((it, idx) => (
+                              <p key={idx}>
+                                <strong className="font-mono text-amber-400">
+                                  {it.quantity}x
+                                </strong>{' '}
+                                {it.name}
+                              </p>
+                            ))}
                           </div>
-                        )}
 
-                        {ord.paymentProofName && (
-                          <div className="inline-flex items-center gap-1.5 text-xs text-emerald-300">
-                            <FileCheck2 className="w-3.5 h-3.5" />
-                            <span>Comprobante: {ord.paymentProofName}</span>
+                          {ord.pagoMovilDetails && (
+                            <div className="text-xs font-mono text-zinc-300 bg-zinc-900 rounded-lg px-2.5 py-1.5 border border-white/5 tabular-nums">
+                              Pago Móvil: {ord.pagoMovilDetails.bank} ·{' '}
+                              {formatCurrency(ord.pagoMovilDetails.amount)} · Ref:{' '}
+                              <strong className="text-amber-400">
+                                #{ord.pagoMovilDetails.referenceLast6}
+                              </strong>
+                            </div>
+                          )}
+
+                          {ord.paymentProofName && (
+                            <div className="inline-flex items-center gap-1.5 text-xs text-emerald-300">
+                              <FileCheck2 className="w-3.5 h-3.5" />
+                              <span>Comprobante Zelle: {ord.paymentProofName}</span>
+                            </div>
+                          )}
+
+                          <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                            <div className="font-mono text-xs tabular-nums">
+                              <strong className="text-sm text-white">
+                                {formatCurrency(ord.total)}
+                              </strong>{' '}
+                              <span className="text-emerald-400">
+                                ({formatBs(ord.total, rate)})
+                              </span>{' '}
+                              · <span className="font-sans text-zinc-300">{ord.paymentMethodName}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setDispatchingOrder(ord)}
+                              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold shadow-md cursor-pointer"
+                            >
+                              <Truck className="w-3.5 h-3.5" />
+                              <span>Despachar Pedido</span>
+                            </button>
                           </div>
-                        )}
-
-                        <div className="flex items-center justify-between pt-2 border-t border-white/10">
-                          <span className="font-mono text-sm font-bold text-white tabular-nums">
-                            {formatCurrency(ord.total)} · {ord.paymentMethodName}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setDispatchingOrder(ord)}
-                            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold shadow-md cursor-pointer"
-                          >
-                            <Truck className="w-3.5 h-3.5" />
-                            <span>Despachar Pedido</span>
-                          </button>
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
 
@@ -1015,76 +1464,80 @@ export function GerenciaModule() {
                       No hay envíos en camino o entregados todavía.
                     </p>
                   ) : (
-                    deliveryDispatched.map((ord) => (
-                      <div
-                        key={ord.id}
-                        className="rounded-xl bg-zinc-950 border border-white/10 p-4 space-y-2.5"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <span className="font-mono text-base font-bold text-white tabular-nums">
-                              {ord.code}
-                            </span>
-                            <span className="text-zinc-500 mx-2">·</span>
-                            <span className="text-sm font-semibold text-white">
-                              {ord.customerName ?? 'Cliente Delivery'}
-                            </span>
-                            <p className="text-xs text-zinc-400 mt-0.5">
-                              Tel Cliente: {ord.customerPhone ?? 'N/D'} · {ord.deliveryAddress}
-                            </p>
+                    deliveryDispatched.map((ord) => {
+                      const rate = ord.bcvRateAtOrder ?? bcvRate;
+                      return (
+                        <div
+                          key={ord.id}
+                          className="rounded-xl bg-zinc-950 border border-white/10 p-4 space-y-2.5"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <span className="font-mono text-base font-bold text-white tabular-nums">
+                                {ord.code}
+                              </span>
+                              <span className="text-zinc-500 mx-2">·</span>
+                              <span className="text-sm font-semibold text-white">
+                                {ord.customerName ?? 'Cliente Delivery'}
+                              </span>
+                              <p className="text-xs text-zinc-400 mt-0.5">
+                                Tel Cliente: {ord.customerPhone ?? 'N/D'} · {ord.deliveryAddress}
+                              </p>
+                            </div>
+                            <OrderStatusText status={ord.status} />
                           </div>
-                          <OrderStatusText status={ord.status} />
-                        </div>
 
-                        {ord.assignedDriverName && (
-                          <div className="rounded-lg bg-zinc-900/90 border border-white/10 px-3 py-2 text-xs text-zinc-300 flex flex-wrap items-center justify-between gap-2">
-                            <span>
-                              <strong className="text-amber-400">Chofer:</strong>{' '}
-                              {ord.assignedDriverName} ({ord.assignedDriverVehicle})
-                            </span>
-                            <span className="font-mono text-zinc-400 tabular-nums">
-                              <Phone className="w-3 h-3 inline mr-1" />
-                              {ord.assignedDriverPhone}
-                            </span>
-                          </div>
-                        )}
+                          {ord.assignedDriverName && (
+                            <div className="rounded-lg bg-zinc-900/90 border border-white/10 px-3 py-2 text-xs text-zinc-300 flex flex-wrap items-center justify-between gap-2">
+                              <span>
+                                <strong className="text-amber-400">Chofer:</strong>{' '}
+                                {ord.assignedDriverName} ({ord.assignedDriverVehicle})
+                              </span>
+                              <span className="font-mono text-zinc-400 tabular-nums">
+                                <Phone className="w-3 h-3 inline mr-1" />
+                                {ord.assignedDriverPhone}
+                              </span>
+                            </div>
+                          )}
 
-                        <div className="flex items-center justify-between pt-2 border-t border-white/10">
-                          <span className="font-mono text-xs text-zinc-300 tabular-nums">
-                            {formatCurrency(ord.total)} · {formatTime(ord.updatedAt)}
-                          </span>
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setDispatchingOrder(ord)}
-                              className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-xs text-amber-400 font-semibold cursor-pointer"
-                            >
-                              Reenviar Avisos
-                            </button>
-                            {ord.status === 'en_camino' && (
+                          <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                            <span className="font-mono text-xs text-zinc-300 tabular-nums">
+                              {formatCurrency(ord.total)} ({formatBs(ord.total, rate)}) ·{' '}
+                              {formatTime(ord.updatedAt)}
+                            </span>
+                            <div className="flex items-center gap-2">
                               <button
                                 type="button"
-                                onClick={() => {
-                                  updateOrderStatus(ord.id, 'servido');
-                                  showToast(`Delivery ${ord.code} entregado.`, 'success');
-                                }}
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
+                                onClick={() => setDispatchingOrder(ord)}
+                                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-xs text-amber-400 font-semibold cursor-pointer"
                               >
-                                <CheckCircle2 className="w-3.5 h-3.5" />
-                                <span>Confirmar Entrega</span>
+                                Reenviar Avisos
                               </button>
-                            )}
+                              {ord.status === 'en_camino' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    updateOrderStatus(ord.id, 'servido');
+                                    showToast(`Delivery ${ord.code} entregado.`, 'success');
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
+                                >
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  <span>Confirmar Entrega</span>
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>
             </section>
           )}
 
-          {/* 5. CARGA DE MENÚ Y PRECIOS (CRUD) */}
+          {/* 5. CARGA DE MENÚ Y PRECIOS (CRUD CON RECONVERSIÓN BCV) */}
           {activeTab === 'menu' && (
             <section className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
               {/* CRUD Form */}
@@ -1093,7 +1546,7 @@ export function GerenciaModule() {
                   {editingProductId ? 'Editar Producto' : 'Registrar Nuevo Producto'}
                 </h2>
                 <p className="text-xs text-zinc-400 mb-4">
-                  Se refleja inmediatamente en Mesera y Menú Público
+                  Ingresa el precio en $ y se mostrará automáticamente en Bs. a tasa BCV
                 </p>
 
                 <form onSubmit={handleProductSubmit} className="space-y-4">
@@ -1140,6 +1593,11 @@ export function GerenciaModule() {
                         placeholder="9.50"
                         className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3 py-2.5 text-sm font-mono text-white focus:outline-none focus:border-amber-500"
                       />
+                      {parseFloat(prodPrice) > 0 && (
+                        <span className="block font-mono text-[11px] text-emerald-400 mt-1 tabular-nums">
+                          ≈ {formatBs(parseFloat(prodPrice), bcvRate)}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -1188,7 +1646,9 @@ export function GerenciaModule() {
                       className="flex-1 inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 text-white text-sm font-bold shadow-lg cursor-pointer"
                     >
                       <Plus className="w-4 h-4" />
-                      <span>{editingProductId ? 'Actualizar Producto' : 'Agregar al Menú'}</span>
+                      <span>
+                        {editingProductId ? 'Actualizar Producto' : 'Agregar al Menú'}
+                      </span>
                     </button>
                     {editingProductId && (
                       <button
@@ -1228,9 +1688,14 @@ export function GerenciaModule() {
                         <div>
                           <div className="flex items-start justify-between gap-2">
                             <p className="text-xs text-zinc-400">{prod.category}</p>
-                            <span className="font-mono text-sm font-bold text-amber-400 tabular-nums">
-                              {formatCurrency(prod.price)}
-                            </span>
+                            <div className="text-right font-mono tabular-nums shrink-0">
+                              <span className="block text-sm font-bold text-amber-400">
+                                {formatCurrency(prod.price)}
+                              </span>
+                              <span className="block text-[11px] text-emerald-400">
+                                {formatBs(prod.price, bcvRate)}
+                              </span>
+                            </div>
                           </div>
                           <h3 className="font-display text-base font-bold text-white truncate">
                             {prod.name}
@@ -1280,105 +1745,157 @@ export function GerenciaModule() {
             </section>
           )}
 
-          {/* 6. MÓDULO CLIENTES & WHATSAPP */}
+          {/* 6. MÓDULO CLIENTES & WHATSAPP (CON CÓDIGO QR DESCARGABLE) */}
           {activeTab === 'whatsapp' && (
-            <section className="max-w-3xl space-y-6">
+            <section className="space-y-6">
               <div>
                 <h1 className="font-display text-2xl font-bold text-white">
-                  Clientes & Enlace Directo por WhatsApp
+                  Clientes, Enlace por WhatsApp & Código QR del Menú Público
                 </h1>
                 <p className="text-sm text-zinc-400 mt-1">
-                  Comparte el Menú Público para que el cliente seleccione productos, pague y adjunte su comprobante
+                  Genera y descarga el código QR oficial o envía el enlace directo por WhatsApp para que el cliente ordene desde su móvil
                 </p>
               </div>
 
-              <div className="rounded-2xl bg-zinc-900/80 border border-white/10 p-6 space-y-5">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                {/* Left Column: WhatsApp Link Generator */}
+                <div className="lg:col-span-7 rounded-2xl bg-zinc-900/80 border border-white/10 p-6 space-y-5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                        Número WhatsApp del Cliente (opcional)
+                      </label>
+                      <input
+                        type="tel"
+                        value={waPhone}
+                        onChange={(e) => setWaPhone(e.target.value)}
+                        placeholder="Ej. 584145558910"
+                        className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3.5 py-2.5 text-sm font-mono text-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                        Mesa Preseleccionada (opcional)
+                      </label>
+                      <select
+                        value={waTable ?? ''}
+                        onChange={(e) =>
+                          setWaTable(e.target.value ? Number(e.target.value) : undefined)
+                        }
+                        className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3.5 py-2.5 text-sm text-white"
+                      >
+                        <option value="">General (Delivery o elegir mesa)</option>
+                        {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                          <option key={m} value={m}>
+                            Mesa {m}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
                   <div>
                     <label className="block text-xs font-medium text-zinc-300 mb-1.5">
-                      Número WhatsApp del Cliente (opcional)
+                      Mensaje de invitación
                     </label>
-                    <input
-                      type="tel"
-                      value={waPhone}
-                      onChange={(e) => setWaPhone(e.target.value)}
-                      placeholder="Ej. 584145558910"
-                      className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3.5 py-2.5 text-sm font-mono text-white"
+                    <textarea
+                      rows={3}
+                      value={waMessage}
+                      onChange={(e) => setWaMessage(e.target.value)}
+                      className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3.5 py-2.5 text-sm text-white"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-xs font-medium text-zinc-300 mb-1.5">
-                      Mesa Preseleccionada (opcional)
-                    </label>
-                    <select
-                      value={waTable ?? ''}
-                      onChange={(e) =>
-                        setWaTable(e.target.value ? Number(e.target.value) : undefined)
-                      }
-                      className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3.5 py-2.5 text-sm text-white"
+                    <span className="block text-xs font-medium text-zinc-400 mb-1.5">
+                      Enlace generado del Menú Público
+                    </span>
+                    <div className="rounded-xl bg-zinc-950 border border-white/10 p-3 font-mono text-xs text-amber-300 break-all">
+                      {generatedPublicUrl}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3 pt-1">
+                    <a
+                      href={waShareHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold shadow-lg"
                     >
-                      <option value="">General (Delivery o elegir mesa)</option>
-                      {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                        <option key={m} value={m}>
-                          Mesa {m}
-                        </option>
-                      ))}
-                    </select>
+                      <MessageCircle className="w-4 h-4" />
+                      <span>Compartir vía WhatsApp</span>
+                    </a>
+                    <button
+                      type="button"
+                      onClick={handleCopyPublicUrl}
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-semibold cursor-pointer"
+                    >
+                      {copiedUrl ? (
+                        <Check className="w-4 h-4 text-emerald-400" />
+                      ) : (
+                        <Copy className="w-4 h-4" />
+                      )}
+                      <span>{copiedUrl ? 'Enlace Copiado' : 'Copiar Enlace'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => navigateToModule('menu_publico')}
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-950 border border-white/15 hover:border-amber-500/50 text-amber-400 text-sm font-semibold cursor-pointer"
+                    >
+                      <Share2 className="w-4 h-4" />
+                      <span>Abrir Menú Público Aquí</span>
+                    </button>
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-medium text-zinc-300 mb-1.5">
-                    Mensaje de invitación
-                  </label>
-                  <textarea
-                    rows={3}
-                    value={waMessage}
-                    onChange={(e) => setWaMessage(e.target.value)}
-                    className="w-full rounded-xl bg-zinc-950 border border-white/15 px-3.5 py-2.5 text-sm text-white"
-                  />
-                </div>
-
-                <div>
-                  <span className="block text-xs font-medium text-zinc-400 mb-1.5">
-                    Enlace generado del Menú Público
-                  </span>
-                  <div className="rounded-xl bg-zinc-950 border border-white/10 p-3 font-mono text-xs text-amber-300 break-all">
-                    {generatedPublicUrl}
+                {/* Right Column: Downloadable QR Code Card */}
+                <div className="lg:col-span-5 rounded-2xl bg-zinc-900/80 border border-amber-500/35 p-6 flex flex-col items-center text-center space-y-4">
+                  <div className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-amber-400">
+                    <QrCode className="w-4 h-4" />
+                    <span>
+                      Código QR Descargable{' '}
+                      {waTable ? `(Mesa ${waTable})` : '(Menú General)'}
+                    </span>
                   </div>
-                </div>
 
-                <div className="flex flex-wrap items-center gap-3 pt-1">
-                  <a
-                    href={waShareHref}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold shadow-lg"
-                  >
-                    <MessageCircle className="w-4 h-4" />
-                    <span>Compartir vía WhatsApp</span>
-                  </a>
-                  <button
-                    type="button"
-                    onClick={handleCopyPublicUrl}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-semibold cursor-pointer"
-                  >
-                    {copiedUrl ? (
-                      <Check className="w-4 h-4 text-emerald-400" />
+                  <div className="p-4 rounded-2xl bg-white shadow-xl border border-amber-400/40">
+                    {qrCodeDataUrl ? (
+                      <img
+                        src={qrCodeDataUrl}
+                        alt="Código QR del Menú Público Gordis Burguer"
+                        className="w-52 h-52 object-contain"
+                      />
                     ) : (
-                      <Copy className="w-4 h-4" />
+                      <div className="w-52 h-52 flex items-center justify-center text-xs text-zinc-500">
+                        Generando QR...
+                      </div>
                     )}
-                    <span>{copiedUrl ? 'Enlace Copiado' : 'Copiar Enlace'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => navigateToModule('menu_publico')}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-950 border border-white/15 hover:border-amber-500/50 text-amber-400 text-sm font-semibold cursor-pointer"
-                  >
-                    <Share2 className="w-4 h-4" />
-                    <span>Abrir Menú Público Aquí</span>
-                  </button>
+                  </div>
+
+                  <p className="text-xs text-zinc-300 max-w-xs">
+                    Escanea este código con la cámara del teléfono para abrir directamente el{' '}
+                    <strong className="text-white">Menú Público de Gordis Burguer</strong>
+                    {waTable ? ` en la Mesa ${waTable}` : ''}.
+                  </p>
+
+                  {qrCodeDataUrl && (
+                    <a
+                      href={qrCodeDataUrl}
+                      download={
+                        waTable
+                          ? `qr-menu-gordis-burguer-mesa-${waTable}.png`
+                          : 'qr-menu-gordis-burguer-general.png'
+                      }
+                      onClick={() =>
+                        showToast('Código QR descargado como imagen PNG.', 'success')
+                      }
+                      className="w-full inline-flex items-center justify-center gap-2 py-3 px-5 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 text-white text-sm font-bold shadow-lg transition-all"
+                    >
+                      <Download className="w-4 h-4" />
+                      <span>Descargar Código QR (PNG)</span>
+                    </a>
+                  )}
                 </div>
               </div>
             </section>
@@ -1393,7 +1910,7 @@ export function GerenciaModule() {
                     Métodos de Pago Aceptados
                   </h1>
                   <p className="text-sm text-zinc-400 mt-1">
-                    Activa, desactiva o actualiza los datos bancarios visibles en Mesera y Menú Público
+                    Activa, desactiva o actualiza los datos bancarios visibles en Mesera y Menú Público (Solo Zelle requiere captura de comprobante)
                   </p>
                 </div>
 
@@ -1411,9 +1928,9 @@ export function GerenciaModule() {
                               {pm.name}
                             </h3>
                             <p className="text-xs text-zinc-400">
-                              {pm.requiresProof
-                                ? 'Solicita comprobante en Menú Público'
-                                : 'No requiere captura previa'}
+                              {pm.id === 'pm-zelle' || pm.name.toLowerCase().includes('zelle')
+                                ? 'Solicita carga de capture (comprobante) en Menú Público'
+                                : 'Sin carga de capture (validación directa en formulario)'}
                             </p>
                           </div>
 
@@ -1512,7 +2029,7 @@ export function GerenciaModule() {
                       onChange={(e) => setNewPmRequiresProof(e.target.checked)}
                       className="rounded border-white/20 bg-zinc-950 accent-amber-500"
                     />
-                    <span>Exigir carga de comprobante al cliente</span>
+                    <span>Solicitar comprobante si aplica</span>
                   </label>
 
                   <button
@@ -1531,6 +2048,12 @@ export function GerenciaModule() {
       {/* Modals */}
       {passwordsModalOpen && (
         <PasswordsModal onClose={() => setPasswordsModalOpen(false)} />
+      )}
+      {inspectingCashierOrder && (
+        <OrderCashierDetailModal
+          order={inspectingCashierOrder}
+          onClose={() => setInspectingCashierOrder(null)}
+        />
       )}
       {editingOrder && (
         <EditOrderModal order={editingOrder} onClose={() => setEditingOrder(null)} />

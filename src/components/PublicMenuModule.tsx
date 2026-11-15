@@ -1,16 +1,13 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
-  CreditCard,
-  FileCheck2,
   MapPin,
   Minus,
   Phone,
   Plus,
   ShoppingBag,
   Trash2,
-  Upload,
   User,
   Utensils,
   X,
@@ -18,9 +15,17 @@ import {
 import { useRestaurant } from '../context/RestaurantContext';
 import { Order, OrderItem, Product, ProductCategory } from '../types/restaurant';
 import {
+  PaymentSplitDraft,
+  PaymentSplitForm,
+  createInitialPaymentSplit,
+  validateAndBuildPaymentSplits,
+} from './PaymentSplitForm';
+import {
+  BcvRateBanner,
   BrandLogo,
   OrderStatusText,
   SafeProductImage,
+  formatBs,
   formatCurrency,
   modalityLabel,
 } from './SharedUI';
@@ -39,6 +44,7 @@ export function PublicMenuModule() {
     products,
     paymentMethods,
     orders,
+    bcvRate,
     preselectedTable,
     currentRole,
     createOrder,
@@ -61,25 +67,6 @@ export function PublicMenuModule() {
     () => paymentMethods.filter((pm) => pm.enabled),
     [paymentMethods]
   );
-  const [selectedPaymentId, setSelectedPaymentId] = useState<string>(
-    () => enabledPayments[0]?.id ?? ''
-  );
-  const [proofFileName, setProofFileName] = useState<string>('');
-  const [proofPreviewUrl, setProofPreviewUrl] = useState<string>('');
-  const [confirmedOrderId, setConfirmedOrderId] = useState<string | null>(null);
-
-  const activePayment = useMemo(
-    () =>
-      enabledPayments.find((pm) => pm.id === selectedPaymentId) ?? enabledPayments[0],
-    [enabledPayments, selectedPaymentId]
-  );
-
-  const visibleProducts = useMemo(() => {
-    return products.filter((p) => {
-      if (!p.available) return false;
-      return selectedCategory === 'Todas' || p.category === selectedCategory;
-    });
-  }, [products, selectedCategory]);
 
   const cartTotal = useMemo(
     () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
@@ -89,6 +76,41 @@ export function PublicMenuModule() {
     () => cart.reduce((sum, item) => sum + item.quantity, 0),
     [cart]
   );
+
+  // Multi-payment splits state (same rules as Mesera: Pago Móvil bank/amount/ref6, Efectivo $/Bs, + Añadir otro pago)
+  const [paymentSplits, setPaymentSplits] = useState<PaymentSplitDraft[]>(() => [
+    createInitialPaymentSplit(enabledPayments[0]?.id ?? 'pm-pago-movil', 0),
+  ]);
+
+  useEffect(() => {
+    setPaymentSplits((prev) => {
+      if (prev.length === 1) {
+        return [
+          {
+            ...prev[0],
+            methodId:
+              enabledPayments.find((pm) => pm.id === prev[0].methodId)?.id ??
+              enabledPayments[0]?.id ??
+              '',
+            amountUsd: cartTotal > 0 ? cartTotal.toFixed(2) : '',
+          },
+        ];
+      }
+      return prev;
+    });
+  }, [cartTotal, enabledPayments]);
+
+  // Capture upload ONLY applies when Zelle is chosen
+  const [proofFileName, setProofFileName] = useState<string>('');
+  const [proofPreviewUrl, setProofPreviewUrl] = useState<string>('');
+  const [confirmedOrderId, setConfirmedOrderId] = useState<string | null>(null);
+
+  const visibleProducts = useMemo(() => {
+    return products.filter((p) => {
+      if (!p.available) return false;
+      return selectedCategory === 'Todas' || p.category === selectedCategory;
+    });
+  }, [products, selectedCategory]);
 
   const liveTrackedOrder: Order | undefined = useMemo(
     () => orders.find((o) => o.id === confirmedOrderId),
@@ -135,7 +157,7 @@ export function PublicMenuModule() {
     } else {
       setProofPreviewUrl('');
     }
-    showToast('Comprobante adjuntado correctamente.', 'success');
+    showToast('Captura de Zelle adjuntada correctamente.', 'success');
   };
 
   const handleConfirmPayment = (e: React.FormEvent) => {
@@ -144,7 +166,7 @@ export function PublicMenuModule() {
       showToast('Tu carrito está vacío.', 'error');
       return;
     }
-    if (!activePayment) {
+    if (enabledPayments.length === 0) {
       showToast('Selecciona un método de pago disponible.', 'error');
       return;
     }
@@ -154,11 +176,20 @@ export function PublicMenuModule() {
         return;
       }
     }
-    if (activePayment.requiresProof && !proofFileName) {
-      showToast(
-        `Adjunta el comprobante de pago para ${activePayment.name}.`,
-        'error'
-      );
+
+    const validation = validateAndBuildPaymentSplits(
+      paymentSplits,
+      enabledPayments,
+      cartTotal,
+      bcvRate,
+      {
+        isPublicMenu: true,
+        proofFileName,
+      }
+    );
+
+    if (!validation.ok || !validation.normalizedSplits) {
+      showToast(validation.error ?? 'Revisa los datos de pago.', 'error');
       return;
     }
 
@@ -171,8 +202,12 @@ export function PublicMenuModule() {
       deliveryAddress: modality === 'delivery' ? deliveryAddress.trim() : undefined,
       items: cart,
       total: cartTotal,
-      paymentMethodId: activePayment.id,
-      paymentMethodName: activePayment.name,
+      bcvRateAtOrder: bcvRate,
+      paymentMethodId: validation.primaryMethodId ?? enabledPayments[0].id,
+      paymentMethodName: validation.primaryMethodName ?? enabledPayments[0].name,
+      payments: validation.normalizedSplits,
+      pagoMovilDetails: validation.primaryPagoMovil,
+      cashCurrency: validation.primaryCashCurrency,
       paymentProofName: proofFileName || undefined,
       paymentProofUrl: proofPreviewUrl || undefined,
     });
@@ -182,6 +217,9 @@ export function PublicMenuModule() {
     setCheckoutOpen(false);
     setProofFileName('');
     setProofPreviewUrl('');
+    setPaymentSplits([
+      createInitialPaymentSplit(enabledPayments[0]?.id ?? 'pm-pago-movil', 0),
+    ]);
     showToast(`¡Pedido ${order.code} enviado a Cocina y Gerencia!`, 'success');
   };
 
@@ -189,8 +227,11 @@ export function PublicMenuModule() {
     <div className="min-h-screen bg-[#0B0C0E] text-zinc-100 flex flex-col">
       {/* Storefront Top Bar */}
       <header className="sticky top-0 z-30 flex items-center justify-between gap-4 px-4 sm:px-8 py-3.5 bg-zinc-950/90 backdrop-blur-xl border-b border-white/10">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3 sm:gap-4">
           <BrandLogo size="sm" />
+          <div className="hidden md:block">
+            <BcvRateBanner compact />
+          </div>
           <button
             type="button"
             onClick={() => navigateToModule(currentRole ?? 'login')}
@@ -208,7 +249,9 @@ export function PublicMenuModule() {
         >
           <ShoppingBag className="w-4 h-4" />
           <span>Mi Pedido ({cartCount})</span>
-          <span className="font-mono tabular-nums">· {formatCurrency(cartTotal)}</span>
+          <span className="font-mono tabular-nums">
+            · {formatCurrency(cartTotal)} ({formatBs(cartTotal, bcvRate)})
+          </span>
         </button>
       </header>
 
@@ -216,14 +259,20 @@ export function PublicMenuModule() {
         {/* Hero Intro */}
         <section className="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4 pb-6 border-b border-white/10">
           <div>
-            <p className="text-xs font-semibold text-amber-400 tracking-wide">
-              Menú Digital · Pedido Directo sin Esperas
-            </p>
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <span className="text-xs font-semibold text-amber-400 tracking-wide">
+                Menú Digital · Pedido Directo sin Esperas
+              </span>
+              <div className="md:hidden">
+                <BcvRateBanner compact />
+              </div>
+            </div>
             <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-white tracking-tight mt-1 text-balance">
               Hamburguesas, Perros Calientes y Papas Recién Hechas
             </h1>
             <p className="text-sm text-zinc-400 mt-2 max-w-2xl">
-              Arma tu orden, selecciona tu mesa o delivery, realiza el pago y sube tu comprobante al instante.
+              Precios expresados en Dólares ($) y Bolívares (Bs.) a la tasa oficial del BCV.
+              Arma tu orden, selecciona tu mesa o delivery y registra tu pago al instante.
             </p>
           </div>
 
@@ -249,7 +298,12 @@ export function PublicMenuModule() {
                 <p className="text-xs sm:text-sm text-zinc-300">
                   {modalityLabel(liveTrackedOrder.modality, liveTrackedOrder.tableNumber)} · Total{' '}
                   <strong className="font-mono text-white tabular-nums">
-                    {formatCurrency(liveTrackedOrder.total)}
+                    {formatCurrency(liveTrackedOrder.total)} (
+                    {formatBs(
+                      liveTrackedOrder.total,
+                      liveTrackedOrder.bcvRateAtOrder ?? bcvRate
+                    )}
+                    )
                   </strong>{' '}
                   · Pago vía {liveTrackedOrder.paymentMethodName}
                 </p>
@@ -319,9 +373,14 @@ export function PublicMenuModule() {
                   </div>
 
                   <div className="flex items-center justify-between pt-3 border-t border-white/10">
-                    <span className="font-mono text-xl font-bold text-amber-400 tabular-nums">
-                      {formatCurrency(product.price)}
-                    </span>
+                    <div>
+                      <span className="block font-mono text-xl font-bold text-amber-400 tabular-nums">
+                        {formatCurrency(product.price)}
+                      </span>
+                      <span className="block font-mono text-xs text-zinc-400 tabular-nums">
+                        {formatBs(product.price, bcvRate)}
+                      </span>
+                    </div>
 
                     {inCart ? (
                       <div className="flex items-center gap-2">
@@ -372,12 +431,14 @@ export function PublicMenuModule() {
             className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-amber-500 text-white font-bold text-sm shadow-lg"
           >
             <span>Finalizar Pedido ({cartCount})</span>
-            <span className="font-mono tabular-nums">{formatCurrency(cartTotal)}</span>
+            <span className="font-mono tabular-nums">
+              {formatCurrency(cartTotal)} · {formatBs(cartTotal, bcvRate)}
+            </span>
           </button>
         </div>
       )}
 
-      {/* Checkout & Payment Proof Drawer */}
+      {/* Checkout & Payment Drawer */}
       {checkoutOpen && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex justify-end">
           <div className="w-full max-w-lg bg-zinc-950 border-l border-white/15 h-full flex flex-col">
@@ -387,7 +448,7 @@ export function PublicMenuModule() {
                   Confirmar Pedido y Pago
                 </h2>
                 <p className="text-xs text-zinc-400">
-                  Envío inmediato a Cocina y Gerencia
+                  Tasa Oficial BCV: Bs. {bcvRate.toFixed(2)} / $ · Envío directo a Cocina
                 </p>
               </div>
               <button
@@ -421,7 +482,7 @@ export function PublicMenuModule() {
                         <div className="min-w-0">
                           <p className="text-sm font-medium text-white truncate">{item.name}</p>
                           <p className="text-xs font-mono text-amber-400 tabular-nums">
-                            {formatCurrency(item.price)} c/u
+                            {formatCurrency(item.price)} ({formatBs(item.price, bcvRate)}) c/u
                           </p>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
@@ -542,90 +603,30 @@ export function PublicMenuModule() {
                 )}
               </div>
 
-              {/* Payment Methods Configured by Gerencia */}
+              {/* Same Payment Measures as Mesera + Capture upload ONLY for Zelle */}
               <div className="space-y-3">
-                <h3 className="text-sm font-semibold text-white">Método de Pago</h3>
-                <div className="space-y-2">
-                  {enabledPayments.map((pm) => {
-                    const isSelected = activePayment?.id === pm.id;
-                    return (
-                      <button
-                        key={pm.id}
-                        type="button"
-                        onClick={() => setSelectedPaymentId(pm.id)}
-                        className={`w-full text-left rounded-xl border p-3.5 transition-all cursor-pointer ${
-                          isSelected
-                            ? 'bg-zinc-900 border-amber-500 shadow-sm'
-                            : 'bg-zinc-900/50 border-white/10 hover:border-white/25'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="inline-flex items-center gap-2 text-sm font-semibold text-white">
-                            <CreditCard className="w-4 h-4 text-amber-400" />
-                            {pm.name}
-                          </span>
-                          <span className="text-xs text-zinc-400">
-                            {pm.requiresProof ? 'Requiere comprobante' : 'Pago directo'}
-                          </span>
-                        </div>
-                        <p className="text-xs text-zinc-300 mt-1.5">{pm.details}</p>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Upload Payment Proof */}
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold text-white">
-                  Cargar Comprobante de Pago{' '}
-                  {activePayment?.requiresProof ? (
-                    <span className="text-xs font-normal text-amber-400">(Requerido)</span>
-                  ) : (
-                    <span className="text-xs font-normal text-zinc-400">(Opcional)</span>
-                  )}
-                </label>
-
-                <label className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/20 bg-zinc-900/60 hover:bg-zinc-900 hover:border-amber-500/50 p-5 cursor-pointer transition-colors">
-                  {proofFileName ? (
-                    <>
-                      <FileCheck2 className="w-6 h-6 text-emerald-400" />
-                      <span className="text-xs font-semibold text-emerald-300 text-center break-all">
-                        {proofFileName}
-                      </span>
-                      {proofPreviewUrl && (
-                        <img
-                          src={proofPreviewUrl}
-                          alt="Vista previa de comprobante"
-                          className="mt-2 max-h-28 rounded-lg border border-white/10 object-contain"
-                        />
-                      )}
-                      <span className="text-[11px] text-zinc-400">
-                        Haz clic para reemplazar captura
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <Upload className="w-6 h-6 text-amber-400" />
-                      <span className="text-xs font-medium text-zinc-200">
-                        Subir captura de Pago Móvil, Zelle o recibo
-                      </span>
-                      <span className="text-[11px] text-zinc-500">PNG, JPG o PDF</span>
-                    </>
-                  )}
-                  <input
-                    type="file"
-                    accept="image/*,.pdf"
-                    onChange={handleFileUpload}
-                    className="sr-only"
-                  />
-                </label>
+                <PaymentSplitForm
+                  splits={paymentSplits}
+                  onChangeSplits={setPaymentSplits}
+                  enabledMethods={enabledPayments}
+                  orderTotalUsd={cartTotal}
+                  bcvRate={bcvRate}
+                  showZelleProofUpload={true}
+                  proofFileName={proofFileName}
+                  proofPreviewUrl={proofPreviewUrl}
+                  onFileUpload={handleFileUpload}
+                />
               </div>
 
               {/* Total & Confirm Submit */}
               <div className="pt-4 border-t border-white/10 space-y-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-zinc-400">Monto Total a Pagar</span>
+                <div className="flex items-end justify-between">
+                  <div>
+                    <span className="block text-sm text-zinc-400">Monto Total a Pagar</span>
+                    <span className="font-mono text-xs text-emerald-400 tabular-nums">
+                      {formatBs(cartTotal, bcvRate)}
+                    </span>
+                  </div>
                   <span className="font-mono text-2xl font-bold text-white tabular-nums">
                     {formatCurrency(cartTotal)}
                   </span>

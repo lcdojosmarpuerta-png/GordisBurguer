@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import {
+  DEFAULT_BCV_RATE,
   INITIAL_CLOSURES,
   INITIAL_CREDENTIALS,
   INITIAL_DRIVERS,
@@ -20,7 +21,7 @@ import {
   UserRole,
 } from '../types/restaurant';
 
-const STORAGE_KEY = 'gordis_burguer_state_v2';
+const STORAGE_KEY = 'gordis_burguer_state_v3';
 
 interface PersistedState {
   credentials: RoleCredentials;
@@ -30,6 +31,8 @@ interface PersistedState {
   orders: Order[];
   closures: CashClosureRecord[];
   nextOrderSeq: number;
+  bcvRate: number;
+  bcvLastUpdated: string;
 }
 
 interface RestaurantContextValue {
@@ -42,11 +45,15 @@ interface RestaurantContextValue {
   drivers: DeliveryDriver[];
   orders: Order[];
   closures: CashClosureRecord[];
+  bcvRate: number;
+  bcvLastUpdated: string;
   toasts: ToastMessage[];
   login: (role: UserRole, password: string) => { ok: boolean; error?: string };
   logout: () => void;
   navigateToModule: (mod: ActiveModule) => void;
   updateRolePassword: (role: UserRole, newPassword: string) => void;
+  updateBcvRate: (newRate: number) => void;
+  syncBcvRateFromApi: (silent?: boolean) => Promise<void>;
   addProduct: (product: Omit<Product, 'id'>) => void;
   updateProduct: (id: string, updates: Partial<Omit<Product, 'id'>>) => void;
   deleteProduct: (id: string) => void;
@@ -68,6 +75,8 @@ interface RestaurantContextValue {
   acknowledgeOrderModification: (id: string) => void;
   updateOrderStatus: (id: string, status: OrderStatus) => void;
   cancelOrder: (id: string) => void;
+  confirmOrderForClosure: (id: string) => void;
+  confirmAllOpenOrdersForClosure: () => void;
   performCashClosure: () => CashClosureRecord | null;
   getPublicMenuUrl: (tableNumber?: number) => string;
   showToast: (text: string, type?: ToastMessage['type']) => void;
@@ -90,6 +99,11 @@ function loadInitialState(): PersistedState {
           orders: parsed.orders,
           closures: parsed.closures ?? INITIAL_CLOSURES,
           nextOrderSeq: parsed.nextOrderSeq ?? 105,
+          bcvRate:
+            typeof parsed.bcvRate === 'number' && parsed.bcvRate > 0
+              ? parsed.bcvRate
+              : DEFAULT_BCV_RATE,
+          bcvLastUpdated: parsed.bcvLastUpdated ?? new Date().toISOString(),
         };
       }
     }
@@ -104,6 +118,8 @@ function loadInitialState(): PersistedState {
     orders: INITIAL_ORDERS,
     closures: INITIAL_CLOSURES,
     nextOrderSeq: 105,
+    bcvRate: DEFAULT_BCV_RATE,
+    bcvLastUpdated: new Date().toISOString(),
   };
 }
 
@@ -140,6 +156,73 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
     });
   }, []);
 
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const showToast = useCallback(
+    (text: string, type: ToastMessage['type'] = 'success') => {
+      const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      setToasts((prev) => [...prev, { id, type, text }]);
+      setTimeout(() => {
+        dismissToast(id);
+      }, 3600);
+    },
+    [dismissToast]
+  );
+
+  // Sync Official BCV Rate from public API on startup
+  const syncBcvRateFromApi = useCallback(
+    async (silent = false) => {
+      try {
+        const res = await fetch('https://ve.dolarapi.com/v1/dolares/oficial');
+        if (!res.ok) throw new Error('Respuesta no disponible');
+        const data = (await res.json()) as { promedio?: number; fechaActualizacion?: string };
+        if (typeof data.promedio === 'number' && data.promedio > 0) {
+          const rounded = Number(data.promedio.toFixed(2));
+          persistState((prev) => ({
+            ...prev,
+            bcvRate: rounded,
+            bcvLastUpdated: data.fechaActualizacion ?? new Date().toISOString(),
+          }));
+          if (!silent) {
+            showToast(
+              `Tasa oficial BCV sincronizada: Bs. ${rounded.toFixed(2)} por $1.`,
+              'success'
+            );
+          }
+          return;
+        }
+      } catch {
+        if (!silent) {
+          showToast(
+            'Usando tasa BCV configurada localmente. Puedes ajustarla manualmente.',
+            'info'
+          );
+        }
+      }
+    },
+    [persistState, showToast]
+  );
+
+  useEffect(() => {
+    void syncBcvRateFromApi(true);
+  }, [syncBcvRateFromApi]);
+
+  const updateBcvRate = useCallback(
+    (newRate: number) => {
+      if (Number.isNaN(newRate) || newRate <= 0) return;
+      const rounded = Number(newRate.toFixed(2));
+      persistState((prev) => ({
+        ...prev,
+        bcvRate: rounded,
+        bcvLastUpdated: new Date().toISOString(),
+      }));
+      showToast(`Tasa oficial BCV actualizada a Bs. ${rounded.toFixed(2)} / $.`, 'success');
+    },
+    [persistState, showToast]
+  );
+
   // Cross-tab reactive sync
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
@@ -155,21 +238,6 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
-
-  const dismissToast = useCallback((id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
-
-  const showToast = useCallback(
-    (text: string, type: ToastMessage['type'] = 'success') => {
-      const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      setToasts((prev) => [...prev, { id, type, text }]);
-      setTimeout(() => {
-        dismissToast(id);
-      }, 3600);
-    },
-    [dismissToast]
-  );
 
   const login = useCallback(
     (role: UserRole, password: string) => {
@@ -374,6 +442,8 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
         const seq = prev.nextOrderSeq;
         createdOrder = {
           ...orderInput,
+          bcvRateAtOrder: orderInput.bcvRateAtOrder ?? prev.bcvRate,
+          confirmedForClosure: orderInput.confirmedForClosure ?? false,
           id: `ord-${Date.now()}-${seq}`,
           code: `#GB-${seq}`,
           status: 'pendiente',
@@ -399,7 +469,6 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
         orders: prev.orders.map((ord) => {
           if (ord.id !== id) return ord;
 
-          // Build a concise summary of what changed for Cocina KDS alert
           const changes: string[] = [];
           if (updates.items) {
             const itemsSummary = updates.items
@@ -473,7 +542,14 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
       persistState((prev) => ({
         ...prev,
         orders: prev.orders.map((ord) =>
-          ord.id === id ? { ...ord, status: 'cancelado', updatedAt: nowIso } : ord
+          ord.id === id
+            ? {
+                ...ord,
+                status: 'cancelado',
+                confirmedForClosure: false,
+                updatedAt: nowIso,
+              }
+            : ord
         ),
       }));
       showToast('Pedido cancelado.', 'info');
@@ -481,45 +557,169 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
     [persistState, showToast]
   );
 
+  const confirmOrderForClosure = useCallback(
+    (id: string) => {
+      const nowIso = new Date().toISOString();
+      let confirmedCode = '';
+      persistState((prev) => ({
+        ...prev,
+        orders: prev.orders.map((ord) => {
+          if (ord.id === id) {
+            confirmedCode = ord.code;
+            return {
+              ...ord,
+              confirmedForClosure: true,
+              confirmedForClosureAt: nowIso,
+              updatedAt: nowIso,
+            };
+          }
+          return ord;
+        }),
+      }));
+      showToast(
+        `Pedido ${confirmedCode || ''} confirmado y sumado al Cierre de Caja.`,
+        'success'
+      );
+    },
+    [persistState, showToast]
+  );
+
+  const confirmAllOpenOrdersForClosure = useCallback(() => {
+    const nowIso = new Date().toISOString();
+    persistState((prev) => ({
+      ...prev,
+      orders: prev.orders.map((ord) =>
+        ord.status !== 'cancelado' && !ord.closedInShiftId && !ord.confirmedForClosure
+          ? {
+              ...ord,
+              confirmedForClosure: true,
+              confirmedForClosureAt: nowIso,
+              updatedAt: nowIso,
+            }
+          : ord
+      ),
+    }));
+    showToast('Todos los pedidos abiertos fueron confirmados para el Cierre de Caja.', 'success');
+  }, [persistState, showToast]);
+
   const performCashClosure = useCallback((): CashClosureRecord | null => {
-    const openPaidOrders = state.orders.filter(
-      (o) => o.status !== 'cancelado' && !o.closedInShiftId
+    const confirmedOpenOrders = state.orders.filter(
+      (o) => o.status !== 'cancelado' && !o.closedInShiftId && o.confirmedForClosure
     );
-    if (openPaidOrders.length === 0) {
-      showToast('No hay pedidos abiertos pendientes por cerrar en caja.', 'info');
+
+    if (confirmedOpenOrders.length === 0) {
+      showToast(
+        'Confirma al menos un pedido en Caja Principal para sumarlo al Cierre de Caja.',
+        'error'
+      );
       return null;
     }
 
     const byMethod: Record<string, number> = {};
     let totalSales = 0;
+    const byCurrencySummary = {
+      efectivoUsd: 0,
+      efectivoBs: 0,
+      pagoMovilUsd: 0,
+      pagoMovilBs: 0,
+      zelleUsd: 0,
+      tarjetaUsd: 0,
+      otrosUsd: 0,
+    };
 
-    for (const order of openPaidOrders) {
+    for (const order of confirmedOpenOrders) {
+      const orderRate = order.bcvRateAtOrder ?? state.bcvRate;
       totalSales += order.total;
-      byMethod[order.paymentMethodName] = (byMethod[order.paymentMethodName] ?? 0) + order.total;
+
+      if (order.payments && order.payments.length > 0) {
+        for (const split of order.payments) {
+          const splitLabel =
+            split.methodId === 'pm-efectivo'
+              ? `Efectivo (${split.cashCurrency === 'VES' ? 'Bs' : '$'})`
+              : split.methodName;
+          byMethod[splitLabel] = (byMethod[splitLabel] ?? 0) + split.amountUsd;
+
+          const lower = split.methodName.toLowerCase();
+          if (split.methodId === 'pm-efectivo' || lower.includes('efectivo')) {
+            if (split.cashCurrency === 'VES') {
+              byCurrencySummary.efectivoBs +=
+                split.amountBs || split.amountUsd * orderRate;
+            } else {
+              byCurrencySummary.efectivoUsd += split.amountUsd;
+            }
+          } else if (
+            split.methodId === 'pm-pago-movil' ||
+            lower.includes('pago móvil') ||
+            lower.includes('pago movil')
+          ) {
+            byCurrencySummary.pagoMovilUsd += split.amountUsd;
+            byCurrencySummary.pagoMovilBs +=
+              split.amountBs || split.amountUsd * orderRate;
+          } else if (split.methodId === 'pm-zelle' || lower.includes('zelle')) {
+            byCurrencySummary.zelleUsd += split.amountUsd;
+          } else if (split.methodId === 'pm-tarjeta' || lower.includes('tarjeta')) {
+            byCurrencySummary.tarjetaUsd += split.amountUsd;
+          } else {
+            byCurrencySummary.otrosUsd += split.amountUsd;
+          }
+        }
+      } else {
+        byMethod[order.paymentMethodName] =
+          (byMethod[order.paymentMethodName] ?? 0) + order.total;
+        const lower = order.paymentMethodName.toLowerCase();
+        if (order.paymentMethodId === 'pm-efectivo' || lower.includes('efectivo')) {
+          if (order.cashCurrency === 'VES') {
+            byCurrencySummary.efectivoBs += order.total * orderRate;
+          } else {
+            byCurrencySummary.efectivoUsd += order.total;
+          }
+        } else if (
+          order.paymentMethodId === 'pm-pago-movil' ||
+          lower.includes('pago móvil') ||
+          lower.includes('pago movil')
+        ) {
+          byCurrencySummary.pagoMovilUsd += order.total;
+          byCurrencySummary.pagoMovilBs += order.total * orderRate;
+        } else if (order.paymentMethodId === 'pm-zelle' || lower.includes('zelle')) {
+          byCurrencySummary.zelleUsd += order.total;
+        } else if (order.paymentMethodId === 'pm-tarjeta' || lower.includes('tarjeta')) {
+          byCurrencySummary.tarjetaUsd += order.total;
+        } else {
+          byCurrencySummary.otrosUsd += order.total;
+        }
+      }
     }
+
+    const totalSalesBs = Number((totalSales * state.bcvRate).toFixed(2));
+    const confirmedIds = new Set(confirmedOpenOrders.map((o) => o.id));
 
     const closure: CashClosureRecord = {
       id: `cierre-${Date.now()}`,
       closedAt: new Date().toISOString(),
-      totalSales,
-      orderCount: openPaidOrders.length,
+      totalSales: Number(totalSales.toFixed(2)),
+      totalSalesBs,
+      bcvRate: state.bcvRate,
+      orderCount: confirmedOpenOrders.length,
       byMethod,
+      byCurrencySummary,
+      orderCodes: confirmedOpenOrders.map((o) => o.code),
       closedBy: 'Gerencia',
     };
 
     persistState((prev) => ({
       ...prev,
       orders: prev.orders.map((ord) =>
-        ord.status !== 'cancelado' && !ord.closedInShiftId
-          ? { ...ord, closedInShiftId: closure.id }
-          : ord
+        confirmedIds.has(ord.id) ? { ...ord, closedInShiftId: closure.id } : ord
       ),
       closures: [closure, ...prev.closures],
     }));
 
-    showToast(`Cierre de caja realizado por $${totalSales.toFixed(2)}.`, 'success');
+    showToast(
+      `Cierre de caja realizado: $${closure.totalSales.toFixed(2)} (Bs. ${totalSalesBs.toLocaleString('es-VE', { minimumFractionDigits: 2 })}).`,
+      'success'
+    );
     return closure;
-  }, [state.orders, persistState, showToast]);
+  }, [state.orders, state.bcvRate, persistState, showToast]);
 
   const getPublicMenuUrl = useCallback((tableNumber?: number) => {
     const base = `${window.location.origin}${window.location.pathname}`;
@@ -538,11 +738,15 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
         drivers: state.drivers,
         orders: state.orders,
         closures: state.closures,
+        bcvRate: state.bcvRate,
+        bcvLastUpdated: state.bcvLastUpdated,
         toasts,
         login,
         logout,
         navigateToModule,
         updateRolePassword,
+        updateBcvRate,
+        syncBcvRateFromApi,
         addProduct,
         updateProduct,
         deleteProduct,
@@ -558,6 +762,8 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
         acknowledgeOrderModification,
         updateOrderStatus,
         cancelOrder,
+        confirmOrderForClosure,
+        confirmAllOpenOrdersForClosure,
         performCashClosure,
         getPublicMenuUrl,
         showToast,

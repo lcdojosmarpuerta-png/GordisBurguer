@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
 import {
   AlertCircle,
+  Check,
   CheckCircle2,
   ChefHat,
   Clock,
+  Edit3,
   Info,
+  RefreshCw,
   Truck,
   UtensilsCrossed,
   X,
@@ -16,6 +19,22 @@ import { OrderModality, OrderStatus } from '../types/restaurant';
 
 export function formatCurrency(amount: number): string {
   return `$${amount.toFixed(2)}`;
+}
+
+export function formatBsAmount(amountBs: number): string {
+  return `Bs. ${amountBs.toLocaleString('es-VE', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+export function formatBs(amountUsd: number, bcvRate: number): string {
+  const bs = amountUsd * bcvRate;
+  return formatBsAmount(bs);
+}
+
+export function formatDualCurrency(amountUsd: number, bcvRate: number): string {
+  return `${formatCurrency(amountUsd)} · ${formatBs(amountUsd, bcvRate)}`;
 }
 
 export function formatTime(isoDate: string): string {
@@ -45,6 +64,103 @@ export function modalityLabel(modality: OrderModality, tableNumber?: number): st
   }
   if (modality === 'llevar') return 'Para llevar';
   return 'Delivery';
+}
+
+export function BcvRateBanner({
+  editable = false,
+  compact = false,
+}: {
+  editable?: boolean;
+  compact?: boolean;
+}) {
+  const { bcvRate, updateBcvRate, syncBcvRateFromApi } = useRestaurant();
+  const [editing, setEditing] = useState(false);
+  const [draftRate, setDraftRate] = useState(() => bcvRate.toFixed(2));
+  const [syncing, setSyncing] = useState(false);
+
+  const handleSave = (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsed = parseFloat(draftRate);
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      updateBcvRate(parsed);
+      setEditing(false);
+    }
+  };
+
+  const handleSync = async () => {
+    setSyncing(true);
+    await syncBcvRateFromApi(false);
+    setSyncing(false);
+  };
+
+  if (editing && editable) {
+    return (
+      <form
+        onSubmit={handleSave}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-zinc-900 border border-amber-500/50 text-xs"
+      >
+        <span className="text-zinc-400 font-medium">BCV Bs/$:</span>
+        <input
+          type="number"
+          step="0.01"
+          min="1"
+          value={draftRate}
+          onChange={(e) => setDraftRate(e.target.value)}
+          className="w-20 rounded-lg bg-zinc-950 border border-white/15 px-2 py-0.5 font-mono text-xs text-white tabular-nums focus:outline-none focus:border-amber-400"
+        />
+        <button
+          type="submit"
+          className="p-1 rounded-md bg-amber-500 text-zinc-950 hover:bg-amber-400 cursor-pointer"
+          title="Guardar tasa BCV"
+        >
+          <Check className="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          className="p-1 rounded-md bg-zinc-800 text-zinc-300 hover:text-white cursor-pointer"
+          title="Cancelar"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </form>
+    );
+  }
+
+  return (
+    <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-zinc-900/90 border border-emerald-500/30 text-xs">
+      <span className="text-zinc-400 font-medium whitespace-nowrap">
+        {compact ? 'BCV:' : 'Tasa Oficial BCV:'}
+      </span>
+      <strong className="font-mono text-emerald-400 tabular-nums whitespace-nowrap">
+        Bs. {bcvRate.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / $
+      </strong>
+      {editable && (
+        <div className="flex items-center gap-1 ml-1 pl-1.5 border-l border-white/10">
+          <button
+            type="button"
+            onClick={() => {
+              setDraftRate(bcvRate.toFixed(2));
+              setEditing(true);
+            }}
+            className="p-1 text-zinc-400 hover:text-amber-400 transition-colors cursor-pointer"
+            title="Editar tasa BCV manualmente"
+          >
+            <Edit3 className="w-3 h-3" />
+          </button>
+          <button
+            type="button"
+            onClick={handleSync}
+            disabled={syncing}
+            className="p-1 text-zinc-400 hover:text-emerald-400 transition-colors cursor-pointer disabled:opacity-50"
+            title="Sincronizar con tasa oficial BCV en línea"
+          >
+            <RefreshCw className={`w-3 h-3 ${syncing ? 'animate-spin text-emerald-400' : ''}`} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function BrandLogo({

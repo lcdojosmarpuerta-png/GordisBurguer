@@ -14,6 +14,9 @@ import hotdogGourmetImg from '../assets/images/product_hotdog_gourmet_1794677105
 export const BRAND_LOGO_URL = '/assets/aistudio/Screenshot_20261114-124540_f539c348.jpg';
 export const LOGIN_BG_URL = '/assets/aistudio/bca7550cadd5d3c0bb81abe7d2c72a36_5d945dad.jpg';
 
+// Official BCV reference exchange rate (Bs. per 1 USD), synced automatically with BCV API on load
+export const DEFAULT_BCV_RATE = 64.85;
+
 export const INITIAL_CREDENTIALS: RoleCredentials = {
   gerencia: 'admin123',
   mesera: 'mesera123',
@@ -148,12 +151,13 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
 ];
 
+// Only Zelle requires capture upload (requiresProof: true)
 export const INITIAL_PAYMENT_METHODS: PaymentMethod[] = [
   {
     id: 'pm-pago-movil',
     name: 'Pago Móvil',
     details: 'Banesco (0134) · V-24.890.112 · Tel: 0414-555-8910',
-    requiresProof: true,
+    requiresProof: false,
     enabled: true,
   },
   {
@@ -166,7 +170,7 @@ export const INITIAL_PAYMENT_METHODS: PaymentMethod[] = [
   {
     id: 'pm-efectivo',
     name: 'Efectivo ($ / Bs)',
-    details: 'Pago en caja o al motorizado al recibir tu pedido.',
+    details: 'Pago en caja o al motorizado en Dólares ($) o Bolívares (Bs).',
     requiresProof: false,
     enabled: true,
   },
@@ -205,8 +209,19 @@ export const INITIAL_ORDERS: Order[] = [
       },
     ],
     total: 25.0,
+    bcvRateAtOrder: DEFAULT_BCV_RATE,
     paymentMethodId: 'pm-tarjeta',
     paymentMethodName: 'Tarjeta / Punto de Venta',
+    payments: [
+      {
+        id: 'pay-101-1',
+        methodId: 'pm-tarjeta',
+        methodName: 'Tarjeta / Punto de Venta',
+        amountUsd: 25.0,
+        amountBs: Number((25.0 * DEFAULT_BCV_RATE).toFixed(2)),
+      },
+    ],
+    confirmedForClosure: false,
     status: 'en_cocina',
     createdAt: minsAgo(9),
     updatedAt: minsAgo(6),
@@ -235,14 +250,38 @@ export const INITIAL_ORDERS: Order[] = [
       },
     ],
     total: 24.0,
+    bcvRateAtOrder: DEFAULT_BCV_RATE,
     paymentMethodId: 'pm-pago-movil',
-    paymentMethodName: 'Pago Móvil',
+    paymentMethodName: 'Pago Móvil + Efectivo ($)',
     pagoMovilDetails: {
       bank: 'Banesco (0134)',
-      amount: 24.0,
+      amount: 14.0,
       referenceLast6: '489821',
     },
-    paymentProofName: 'comprobante_banesco_9821.jpg',
+    cashCurrency: 'USD',
+    payments: [
+      {
+        id: 'pay-102-1',
+        methodId: 'pm-pago-movil',
+        methodName: 'Pago Móvil',
+        amountUsd: 14.0,
+        amountBs: Number((14.0 * DEFAULT_BCV_RATE).toFixed(2)),
+        pagoMovilDetails: {
+          bank: 'Banesco (0134)',
+          amount: 14.0,
+          referenceLast6: '489821',
+        },
+      },
+      {
+        id: 'pay-102-2',
+        methodId: 'pm-efectivo',
+        methodName: 'Efectivo ($ / Bs)',
+        amountUsd: 10.0,
+        amountBs: Number((10.0 * DEFAULT_BCV_RATE).toFixed(2)),
+        cashCurrency: 'USD',
+      },
+    ],
+    confirmedForClosure: false,
     status: 'pendiente',
     createdAt: minsAgo(4),
     updatedAt: minsAgo(4),
@@ -268,8 +307,22 @@ export const INITIAL_ORDERS: Order[] = [
       },
     ],
     total: 22.0,
+    bcvRateAtOrder: DEFAULT_BCV_RATE,
     paymentMethodId: 'pm-efectivo',
-    paymentMethodName: 'Efectivo ($ / Bs)',
+    paymentMethodName: 'Efectivo (Bs)',
+    cashCurrency: 'VES',
+    payments: [
+      {
+        id: 'pay-103-1',
+        methodId: 'pm-efectivo',
+        methodName: 'Efectivo ($ / Bs)',
+        amountUsd: 22.0,
+        amountBs: Number((22.0 * DEFAULT_BCV_RATE).toFixed(2)),
+        cashCurrency: 'VES',
+      },
+    ],
+    confirmedForClosure: true,
+    confirmedForClosureAt: minsAgo(15),
     status: 'servido',
     createdAt: minsAgo(35),
     updatedAt: minsAgo(18),
@@ -297,9 +350,21 @@ export const INITIAL_ORDERS: Order[] = [
       },
     ],
     total: 15.5,
+    bcvRateAtOrder: DEFAULT_BCV_RATE,
     paymentMethodId: 'pm-zelle',
     paymentMethodName: 'Zelle',
+    payments: [
+      {
+        id: 'pay-104-1',
+        methodId: 'pm-zelle',
+        methodName: 'Zelle',
+        amountUsd: 15.5,
+        amountBs: Number((15.5 * DEFAULT_BCV_RATE).toFixed(2)),
+      },
+    ],
     paymentProofName: 'zelle_valeria_1550.png',
+    confirmedForClosure: true,
+    confirmedForClosureAt: minsAgo(10),
     status: 'en_camino',
     assignedDriverId: 'drv-1',
     assignedDriverName: 'José Gregorio Morales',

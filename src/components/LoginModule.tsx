@@ -12,7 +12,7 @@ import {
 import { LOGIN_BG_URL } from '../data/initialData';
 import { useRestaurant } from '../context/RestaurantContext';
 import { UserRole } from '../types/restaurant';
-import { BrandLogo } from './SharedUI';
+import { BcvRateBanner, BrandLogo } from './SharedUI';
 
 const ROLE_OPTIONS: { value: UserRole; label: string; subtitle: string }[] = [
   { value: 'gerencia', label: 'Gerencia', subtitle: 'Control total, menú, caja y accesos' },
@@ -57,7 +57,10 @@ export function LoginModule() {
         <div className="rounded-2xl bg-zinc-950/75 backdrop-blur-2xl border border-white/15 shadow-2xl p-6 sm:p-8">
           {/* Brand Logo Header */}
           <div className="flex flex-col items-start gap-4 pb-6 border-b border-white/10">
-            <BrandLogo size="lg" />
+            <div className="w-full flex items-center justify-between gap-2 flex-wrap">
+              <BrandLogo size="lg" />
+              <BcvRateBanner compact />
+            </div>
             <div>
               <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-white">
                 Acceso al Sistema

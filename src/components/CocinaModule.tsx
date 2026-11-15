@@ -15,7 +15,10 @@ import {
 import { useRestaurant } from '../context/RestaurantContext';
 import { playNewOrderChime, unlockKitchenAudio } from '../utils/kitchenSound';
 import {
+  BcvRateBanner,
   BrandLogo,
+  formatBs,
+  formatCurrency,
   formatElapsedMinutes,
   formatTime,
   modalityLabel,
@@ -26,6 +29,7 @@ const SOUND_PREF_KEY = 'gordis_cocina_sound_enabled';
 export function CocinaModule() {
   const {
     orders,
+    bcvRate,
     updateOrderStatus,
     acknowledgeOrderModification,
     logout,
@@ -190,7 +194,12 @@ export function CocinaModule() {
     <div className="min-h-screen bg-[#0B0C0E] text-zinc-100 flex flex-col">
       {/* Top Bar Contract: 3 zones */}
       <header className="sticky top-0 z-30 flex items-center justify-between gap-4 sm:gap-8 px-4 sm:px-8 py-3.5 bg-zinc-950/90 backdrop-blur-xl border-b border-white/10">
-        <BrandLogo size="sm" />
+        <div className="flex items-center gap-3">
+          <BrandLogo size="sm" />
+          <div className="hidden lg:block">
+            <BcvRateBanner compact />
+          </div>
+        </div>
 
         <nav className="flex items-center gap-1 p-1 rounded-xl bg-zinc-900 border border-white/10">
           <button
@@ -430,10 +439,15 @@ export function CocinaModule() {
                             {modalityLabel(order.modality, order.tableNumber)}
                           </span>
                         </div>
-                        <div className="flex items-center gap-2 text-xs text-zinc-400 mt-1 tabular-nums">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400 mt-1 tabular-nums">
                           <span>{formatTime(order.createdAt)}</span>
                           <span aria-hidden="true">·</span>
                           <span>{order.source === 'mesera' ? 'Sala / Mesera' : 'Menú Público'}</span>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-mono text-zinc-300">
+                            {formatCurrency(order.total)} (
+                            {formatBs(order.total, order.bcvRateAtOrder ?? bcvRate)})
+                          </span>
                           {order.customerName && (
                             <>
                               <span aria-hidden="true">·</span>
