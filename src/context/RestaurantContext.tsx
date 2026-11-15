@@ -7,6 +7,7 @@ import {
   INITIAL_ORDERS,
   INITIAL_PAYMENT_METHODS,
   INITIAL_PRODUCTS,
+  INITIAL_WAITERS,
 } from '../data/initialData';
 import {
   ActiveModule,
@@ -28,6 +29,7 @@ interface PersistedState {
   products: Product[];
   paymentMethods: PaymentMethod[];
   drivers: DeliveryDriver[];
+  waiters: string[];
   orders: Order[];
   closures: CashClosureRecord[];
   nextOrderSeq: number;
@@ -43,6 +45,7 @@ interface RestaurantContextValue {
   products: Product[];
   paymentMethods: PaymentMethod[];
   drivers: DeliveryDriver[];
+  waiters: string[];
   orders: Order[];
   closures: CashClosureRecord[];
   bcvRate: number;
@@ -63,6 +66,8 @@ interface RestaurantContextValue {
   addDriver: (driver: Omit<DeliveryDriver, 'id'>) => DeliveryDriver;
   updateDriver: (id: string, updates: Partial<Omit<DeliveryDriver, 'id'>>) => void;
   deleteDriver: (id: string) => void;
+  addWaiter: (name: string) => void;
+  deleteWaiter: (name: string) => void;
   dispatchOrderWithDriver: (
     orderId: string,
     driver: DeliveryDriver,
@@ -78,6 +83,7 @@ interface RestaurantContextValue {
   confirmOrderForClosure: (id: string) => void;
   confirmAllOpenOrdersForClosure: () => void;
   performCashClosure: () => CashClosureRecord | null;
+  clearAllOrdersExceptClosures: () => void;
   getPublicMenuUrl: (tableNumber?: number) => string;
   showToast: (text: string, type?: ToastMessage['type']) => void;
   dismissToast: (id: string) => void;
@@ -96,6 +102,10 @@ function loadInitialState(): PersistedState {
           products: parsed.products,
           paymentMethods: parsed.paymentMethods,
           drivers: parsed.drivers ?? INITIAL_DRIVERS,
+          waiters:
+            Array.isArray(parsed.waiters) && parsed.waiters.length > 0
+              ? parsed.waiters
+              : INITIAL_WAITERS,
           orders: parsed.orders,
           closures: parsed.closures ?? INITIAL_CLOSURES,
           nextOrderSeq: parsed.nextOrderSeq ?? 105,
@@ -115,6 +125,7 @@ function loadInitialState(): PersistedState {
     products: INITIAL_PRODUCTS,
     paymentMethods: INITIAL_PAYMENT_METHODS,
     drivers: INITIAL_DRIVERS,
+    waiters: INITIAL_WAITERS,
     orders: INITIAL_ORDERS,
     closures: INITIAL_CLOSURES,
     nextOrderSeq: 105,
@@ -404,6 +415,35 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
         drivers: prev.drivers.filter((d) => d.id !== id),
       }));
       showToast('Conductor eliminado de la lista.', 'info');
+    },
+    [persistState, showToast]
+  );
+
+  const addWaiter = useCallback(
+    (name: string) => {
+      const cleaned = name.trim();
+      if (!cleaned) return;
+      persistState((prev) => {
+        if (prev.waiters.some((w) => w.toLowerCase() === cleaned.toLowerCase())) {
+          return prev;
+        }
+        return {
+          ...prev,
+          waiters: [...prev.waiters, cleaned],
+        };
+      });
+      showToast(`Mesera/o "${cleaned}" agregado a la lista.`, 'success');
+    },
+    [persistState, showToast]
+  );
+
+  const deleteWaiter = useCallback(
+    (name: string) => {
+      persistState((prev) => ({
+        ...prev,
+        waiters: prev.waiters.filter((w) => w !== name),
+      }));
+      showToast(`Mesera/o "${name}" eliminado de la lista.`, 'info');
     },
     [persistState, showToast]
   );
@@ -703,6 +743,7 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
       byMethod,
       byCurrencySummary,
       orderCodes: confirmedOpenOrders.map((o) => o.code),
+      ordersSnapshot: confirmedOpenOrders,
       closedBy: 'Gerencia',
     };
 
@@ -721,6 +762,17 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
     return closure;
   }, [state.orders, state.bcvRate, persistState, showToast]);
 
+  const clearAllOrdersExceptClosures = useCallback(() => {
+    persistState((prev) => ({
+      ...prev,
+      orders: [],
+    }));
+    showToast(
+      'Todos los pedidos activos han sido eliminados en todos los módulos. Los reportes de cierre de caja se conservaron intactos.',
+      'info'
+    );
+  }, [persistState, showToast]);
+
   const getPublicMenuUrl = useCallback((tableNumber?: number) => {
     const base = `${window.location.origin}${window.location.pathname}`;
     return tableNumber ? `${base}?vista=menu&mesa=${tableNumber}` : `${base}?vista=menu`;
@@ -736,6 +788,7 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
         products: state.products,
         paymentMethods: state.paymentMethods,
         drivers: state.drivers,
+        waiters: state.waiters,
         orders: state.orders,
         closures: state.closures,
         bcvRate: state.bcvRate,
@@ -756,6 +809,8 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
         addDriver,
         updateDriver,
         deleteDriver,
+        addWaiter,
+        deleteWaiter,
         dispatchOrderWithDriver,
         createOrder,
         updateOrder,
@@ -765,6 +820,7 @@ export function RestaurantProvider({ children }: { children: React.ReactNode }) 
         confirmOrderForClosure,
         confirmAllOpenOrdersForClosure,
         performCashClosure,
+        clearAllOrdersExceptClosures,
         getPublicMenuUrl,
         showToast,
         dismissToast,

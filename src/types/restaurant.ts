@@ -44,7 +44,8 @@ export interface PaymentMethod {
 
 export interface PagoMovilDetails {
   bank: string;
-  amount: number;
+  amount: number; // Equivalent in USD ($)
+  amountBs?: number; // Original amount paid in Bolívares (Bs)
   referenceLast6: string;
 }
 
@@ -83,6 +84,7 @@ export interface Order {
   source: OrderSource;
   modality: OrderModality;
   tableNumber?: number;
+  waiterName?: string; // Nombre de la mesera/o que realizó el pedido
   customerName?: string;
   customerPhone?: string;
   deliveryAddress?: string;
@@ -135,6 +137,7 @@ export interface CashClosureRecord {
     otrosUsd: number;
   };
   orderCodes?: string[];
+  ordersSnapshot?: Order[];
   closedBy: string;
 }
 

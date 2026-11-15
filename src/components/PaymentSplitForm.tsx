@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   AlertCircle,
+  ArrowRightLeft,
   Banknote,
   Building2,
   CheckCircle2,
@@ -24,7 +25,8 @@ import { formatBs, formatBsAmount, formatCurrency } from './SharedUI';
 export interface PaymentSplitDraft {
   id: string;
   methodId: string;
-  amountUsd: string; // Stored in USD string for unified calculation
+  amountUsd: string; // Equivalent in USD ($)
+  amountBs: string; // Amount in Bolívares (Bs.) used as primary input for Pago Móvil & Efectivo Bs
   cashCurrency: CashCurrency; // 'USD' or 'VES' when Efectivo is selected
   pmBank: string;
   pmReference6: string;
@@ -51,14 +53,40 @@ export function isZelleMethod(id?: string, name?: string): boolean {
   return lower.includes('zelle');
 }
 
+/**
+ * Formats an order payment split or Pago Móvil / Efectivo Bs amount respecting the rule:
+ * - For Pago Móvil or Efectivo (Bs): shows Bolívares first and its reverse conversion to USD (Bs ➔ $)
+ * - For USD methods (Efectivo $, Zelle, Tarjeta): shows USD first and its BCV equivalent ($ ➔ Bs)
+ */
+export function formatPaymentAmountDisplay(
+  amountUsd: number,
+  bcvRate: number,
+  options?: {
+    isReverseBsToUsd?: boolean;
+    explicitAmountBs?: number;
+  }
+): string {
+  const bsVal =
+    options?.explicitAmountBs && options.explicitAmountBs > 0
+      ? options.explicitAmountBs
+      : amountUsd * bcvRate;
+  if (options?.isReverseBsToUsd) {
+    return `${formatBsAmount(bsVal)} ➔ ${formatCurrency(amountUsd)}`;
+  }
+  return `${formatCurrency(amountUsd)} (${formatBsAmount(bsVal)})`;
+}
+
 export function createInitialPaymentSplit(
   defaultMethodId: string,
-  orderTotalUsd: number
+  orderTotalUsd: number,
+  bcvRate = 64.85
 ): PaymentSplitDraft {
+  const totalBs = Number((orderTotalUsd * bcvRate).toFixed(2));
   return {
     id: `split-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     methodId: defaultMethodId,
     amountUsd: orderTotalUsd > 0 ? orderTotalUsd.toFixed(2) : '',
+    amountBs: totalBs > 0 ? totalBs.toFixed(2) : '',
     cashCurrency: 'USD',
     pmBank: PAGO_MOVIL_BANKS[0],
     pmReference6: '',
@@ -67,23 +95,39 @@ export function createInitialPaymentSplit(
 
 export function createSplitsFromExistingOrder(
   order: Order,
-  defaultMethodId: string
+  defaultMethodId: string,
+  fallbackRate = 64.85
 ): PaymentSplitDraft[] {
+  const rate = order.bcvRateAtOrder || fallbackRate;
   if (order.payments && order.payments.length > 0) {
-    return order.payments.map((p) => ({
-      id: p.id || `split-${Math.random().toString(36).slice(2, 7)}`,
-      methodId: p.methodId,
-      amountUsd: p.amountUsd.toFixed(2),
-      cashCurrency: p.cashCurrency ?? 'USD',
-      pmBank: p.pagoMovilDetails?.bank ?? PAGO_MOVIL_BANKS[0],
-      pmReference6: p.pagoMovilDetails?.referenceLast6 ?? '',
-    }));
+    return order.payments.map((p) => {
+      const computedBs =
+        p.amountBs && p.amountBs > 0
+          ? p.amountBs
+          : p.pagoMovilDetails?.amountBs && p.pagoMovilDetails.amountBs > 0
+          ? p.pagoMovilDetails.amountBs
+          : Number((p.amountUsd * rate).toFixed(2));
+      return {
+        id: p.id || `split-${Math.random().toString(36).slice(2, 7)}`,
+        methodId: p.methodId,
+        amountUsd: p.amountUsd.toFixed(2),
+        amountBs: computedBs.toFixed(2),
+        cashCurrency: p.cashCurrency ?? 'USD',
+        pmBank: p.pagoMovilDetails?.bank ?? PAGO_MOVIL_BANKS[0],
+        pmReference6: p.pagoMovilDetails?.referenceLast6 ?? '',
+      };
+    });
   }
+  const orderBs =
+    order.pagoMovilDetails?.amountBs && order.pagoMovilDetails.amountBs > 0
+      ? order.pagoMovilDetails.amountBs
+      : Number((order.total * rate).toFixed(2));
   return [
     {
       id: `split-${Date.now()}`,
       methodId: order.paymentMethodId || defaultMethodId,
       amountUsd: order.total.toFixed(2),
+      amountBs: orderBs.toFixed(2),
       cashCurrency: order.cashCurrency ?? 'USD',
       pmBank: order.pagoMovilDetails?.bank ?? PAGO_MOVIL_BANKS[0],
       pmReference6: order.pagoMovilDetails?.referenceLast6 ?? '',
@@ -159,8 +203,26 @@ export function validateAndBuildPaymentSplits(
       };
     }
 
+    const isPm = isPagoMovilMethod(method.id, method.name);
+    const isEf = isEfectivoMethod(method.id, method.name);
+    const isZe = isZelleMethod(method.id, method.name);
+    const isReverseBsMethod = isPm || (isEf && s.cashCurrency === 'VES');
+
     const amtUsd = parseFloat(s.amountUsd);
-    if (Number.isNaN(amtUsd) || amtUsd <= 0) {
+    const amtBs = parseFloat(s.amountBs);
+
+    if (isReverseBsMethod) {
+      if (Number.isNaN(amtBs) || amtBs <= 0 || Number.isNaN(amtUsd) || amtUsd <= 0) {
+        return {
+          ok: false,
+          totalLoadedUsd,
+          remainingUsd,
+          error: `Ingresa un monto en Bolívares (Bs.) mayor a 0 en el pago #${i + 1} (${
+            method.name
+          }).`,
+        };
+      }
+    } else if (Number.isNaN(amtUsd) || amtUsd <= 0) {
       return {
         ok: false,
         totalLoadedUsd,
@@ -169,13 +231,14 @@ export function validateAndBuildPaymentSplits(
       };
     }
 
-    const isPm = isPagoMovilMethod(method.id, method.name);
-    const isEf = isEfectivoMethod(method.id, method.name);
-    const isZe = isZelleMethod(method.id, method.name);
-
     if (isZe) {
       hasZelle = true;
     }
+
+    const roundedUsd = Number(amtUsd.toFixed(2));
+    const roundedBs = isReverseBsMethod
+      ? Number(amtBs.toFixed(2))
+      : Number((roundedUsd * bcvRate).toFixed(2));
 
     let pmDetails: PagoMovilDetails | undefined;
     if (isPm) {
@@ -198,13 +261,12 @@ export function validateAndBuildPaymentSplits(
       }
       pmDetails = {
         bank: s.pmBank.trim(),
-        amount: Number(amtUsd.toFixed(2)),
+        amount: roundedUsd,
+        amountBs: roundedBs,
         referenceLast6: cleanRef,
       };
     }
 
-    const roundedUsd = Number(amtUsd.toFixed(2));
-    const roundedBs = Number((roundedUsd * bcvRate).toFixed(2));
     sumUsd += roundedUsd;
 
     built.push({
@@ -325,14 +387,19 @@ export function PaymentSplitForm({
       const val = parseFloat(s.amountUsd);
       return acc + (Number.isNaN(val) || val < 0 ? 0 : val);
     }, 0);
-    const nextRemaining = Math.max(0, Number((orderTotalUsd - currentPaid).toFixed(2)));
+    const nextRemainingUsd = Math.max(
+      0,
+      Number((orderTotalUsd - currentPaid).toFixed(2))
+    );
+    const nextRemainingBs = Number((nextRemainingUsd * bcvRate).toFixed(2));
 
     onChangeSplits((prev) => [
       ...prev,
       {
         id: `split-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         methodId: defaultMethod.id,
-        amountUsd: nextRemaining > 0 ? nextRemaining.toFixed(2) : '',
+        amountUsd: nextRemainingUsd > 0 ? nextRemainingUsd.toFixed(2) : '',
+        amountBs: nextRemainingBs > 0 ? nextRemainingBs.toFixed(2) : '',
         cashCurrency: 'USD',
         pmBank: PAGO_MOVIL_BANKS[0],
         pmReference6: '',
@@ -474,8 +541,12 @@ export function PaymentSplitForm({
               enabledMethods[0];
             const isPm = isPagoMovilMethod(method?.id, method?.name);
             const isEf = isEfectivoMethod(method?.id, method?.name);
+            const isReverseBsMode = isPm || (isEf && split.cashCurrency === 'VES');
+
             const numericUsd = parseFloat(split.amountUsd) || 0;
-            const numericBs = Number((numericUsd * bcvRate).toFixed(2));
+            const numericBs =
+              parseFloat(split.amountBs) ||
+              Number((numericUsd * bcvRate).toFixed(2));
 
             const otherSplitsUsd = splits.reduce((acc, s) => {
               if (s.id === split.id) return acc;
@@ -485,6 +556,9 @@ export function PaymentSplitForm({
             const remainingForThisRowUsd = Math.max(
               0,
               Number((orderTotalUsd - otherSplitsUsd).toFixed(2))
+            );
+            const remainingForThisRowBs = Number(
+              (remainingForThisRowUsd * bcvRate).toFixed(2)
             );
             const rowAfterThisUsd = Math.max(
               0,
@@ -508,11 +582,14 @@ export function PaymentSplitForm({
                           onClick={() =>
                             handleUpdateSplit(split.id, {
                               amountUsd: remainingForThisRowUsd.toFixed(2),
+                              amountBs: remainingForThisRowBs.toFixed(2),
                             })
                           }
                           className="text-[11px] font-semibold text-emerald-400 hover:underline cursor-pointer"
                         >
-                          Completar restante ({formatCurrency(remainingForThisRowUsd)})
+                          {isReverseBsMode
+                            ? `Completar restante (${formatBsAmount(remainingForThisRowBs)} ➔ ${formatCurrency(remainingForThisRowUsd)})`
+                            : `Completar restante (${formatCurrency(remainingForThisRowUsd)})`}
                         </button>
                       )}
                     <button
@@ -535,9 +612,17 @@ export function PaymentSplitForm({
                     <CreditCard className="w-3.5 h-3.5 text-amber-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <select
                       value={method?.id ?? ''}
-                      onChange={(e) =>
-                        handleUpdateSplit(split.id, { methodId: e.target.value })
-                      }
+                      onChange={(e) => {
+                        const newMethodId = e.target.value;
+                        const currentUsd = parseFloat(split.amountUsd) || remainingForThisRowUsd;
+                        const syncedBs =
+                          currentUsd > 0 ? (currentUsd * bcvRate).toFixed(2) : '';
+                        handleUpdateSplit(split.id, {
+                          methodId: newMethodId,
+                          amountUsd: currentUsd > 0 ? currentUsd.toFixed(2) : '',
+                          amountBs: syncedBs,
+                        });
+                      }}
                       className="w-full rounded-lg bg-zinc-900 border border-white/15 pl-8 pr-3 py-2 text-xs font-medium text-white focus:outline-none focus:border-amber-500"
                     >
                       {enabledMethods.map((pm) => (
@@ -552,7 +637,7 @@ export function PaymentSplitForm({
                   )}
                 </div>
 
-                {/* EFECTIVO ($ / Bs): Currency Selector + Dual Input + Restante */}
+                {/* EFECTIVO ($ / Bs): Currency Selector + Reverse Conversion when Bs is selected */}
                 {isEf && (
                   <div className="rounded-xl bg-zinc-900/90 border border-emerald-500/30 p-2.5 space-y-2.5">
                     <div>
@@ -576,9 +661,17 @@ export function PaymentSplitForm({
                         </button>
                         <button
                           type="button"
-                          onClick={() =>
-                            handleUpdateSplit(split.id, { cashCurrency: 'VES' })
-                          }
+                          onClick={() => {
+                            const baseUsd =
+                              parseFloat(split.amountUsd) || remainingForThisRowUsd;
+                            const nextBs =
+                              baseUsd > 0 ? (baseUsd * bcvRate).toFixed(2) : '';
+                            handleUpdateSplit(split.id, {
+                              cashCurrency: 'VES',
+                              amountBs: nextBs,
+                              amountUsd: baseUsd > 0 ? baseUsd.toFixed(2) : '',
+                            });
+                          }}
                           className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-xs font-bold transition-colors cursor-pointer ${
                             split.cashCurrency === 'VES'
                               ? 'bg-amber-500 text-zinc-950'
@@ -586,7 +679,7 @@ export function PaymentSplitForm({
                           }`}
                         >
                           <Banknote className="w-3.5 h-3.5" />
-                          <span>Bolívares (Bs)</span>
+                          <span>Bolívares (Bs ➔ $)</span>
                         </button>
                       </div>
                     </div>
@@ -594,7 +687,7 @@ export function PaymentSplitForm({
                     {split.cashCurrency === 'USD' ? (
                       <div>
                         <label className="block text-[11px] text-zinc-300 mb-1">
-                          Monto Pagado en Efectivo ($) *
+                          Monto Pagado en Efectivo Dólares ($) *
                         </label>
                         <input
                           type="number"
@@ -602,57 +695,80 @@ export function PaymentSplitForm({
                           min="0.01"
                           required
                           value={split.amountUsd}
-                          onChange={(e) =>
-                            handleUpdateSplit(split.id, { amountUsd: e.target.value })
-                          }
+                          onChange={(e) => {
+                            const valUsd = parseFloat(e.target.value);
+                            const eqBs =
+                              !Number.isNaN(valUsd) && valUsd > 0
+                                ? (valUsd * bcvRate).toFixed(2)
+                                : '';
+                            handleUpdateSplit(split.id, {
+                              amountUsd: e.target.value,
+                              amountBs: eqBs,
+                            });
+                          }}
                           placeholder="0.00"
                           className="w-full rounded-lg bg-zinc-950 border border-white/15 px-2.5 py-1.5 text-xs font-mono text-white tabular-nums focus:outline-none focus:border-emerald-500"
                         />
                         <p className="text-[11px] font-mono text-zinc-400 mt-1 tabular-nums">
-                          Equivalente BCV: {formatBsAmount(numericBs)}
+                          Referencia BCV ($ ➔ Bs): {formatBsAmount(numericUsd * bcvRate)}
                         </p>
                       </div>
                     ) : (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        <div>
-                          <label className="block text-[11px] text-zinc-300 mb-1">
-                            Monto en Bolívares (Bs) *
-                          </label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0.01"
-                            required
-                            value={numericBs > 0 ? numericBs : ''}
-                            onChange={(e) => {
-                              const valBs = parseFloat(e.target.value);
-                              if (Number.isNaN(valBs) || valBs <= 0) {
-                                handleUpdateSplit(split.id, { amountUsd: '' });
-                              } else {
-                                const usdEq = (valBs / bcvRate).toFixed(2);
-                                handleUpdateSplit(split.id, { amountUsd: usdEq });
-                              }
-                            }}
-                            placeholder="0.00"
-                            className="w-full rounded-lg bg-zinc-950 border border-amber-500/40 px-2.5 py-1.5 text-xs font-mono text-amber-300 tabular-nums focus:outline-none focus:border-amber-500"
-                          />
+                      /* RECONVERSIÓN INVERSA: De Bolívares (Bs) a Dólares ($) */
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="inline-flex items-center gap-1 font-semibold text-amber-300">
+                            <ArrowRightLeft className="w-3 h-3 text-amber-400" />
+                            <span>Reconversión Efectivo (Bs. ➔ $ BCV)</span>
+                          </span>
+                          <span className="font-mono text-zinc-400 tabular-nums">
+                            Tasa: Bs. {bcvRate.toFixed(2)} / $1
+                          </span>
                         </div>
-                        <div>
-                          <label className="block text-[11px] text-zinc-300 mb-1">
-                            Equivalente ($) a tasa BCV
-                          </label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0.01"
-                            required
-                            value={split.amountUsd}
-                            onChange={(e) =>
-                              handleUpdateSplit(split.id, { amountUsd: e.target.value })
-                            }
-                            placeholder="0.00"
-                            className="w-full rounded-lg bg-zinc-950 border border-white/15 px-2.5 py-1.5 text-xs font-mono text-white tabular-nums focus:outline-none focus:border-amber-500"
-                          />
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[11px] text-zinc-200 font-semibold mb-1">
+                              Monto Recibido en Bolívares (Bs.) *
+                            </label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0.01"
+                              required
+                              value={split.amountBs}
+                              onChange={(e) => {
+                                const rawBs = e.target.value;
+                                const valBs = parseFloat(rawBs);
+                                if (Number.isNaN(valBs) || valBs <= 0) {
+                                  handleUpdateSplit(split.id, {
+                                    amountBs: rawBs,
+                                    amountUsd: '',
+                                  });
+                                } else {
+                                  const usdConverted = (valBs / bcvRate).toFixed(2);
+                                  handleUpdateSplit(split.id, {
+                                    amountBs: rawBs,
+                                    amountUsd: usdConverted,
+                                  });
+                                }
+                              }}
+                              placeholder={remainingForThisRowBs.toFixed(2)}
+                              className="w-full rounded-lg bg-zinc-950 border border-amber-500/50 px-2.5 py-1.5 text-xs font-mono text-amber-300 font-bold tabular-nums focus:outline-none focus:border-amber-400"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[11px] text-zinc-300 mb-1">
+                              Reconversión a Dólares ($)
+                            </label>
+                            <div className="w-full rounded-lg bg-zinc-950/90 border border-emerald-500/35 px-2.5 py-1.5 text-xs font-mono text-emerald-400 font-bold tabular-nums flex items-center justify-between">
+                              <span>{formatCurrency(numericUsd)}</span>
+                              <span className="text-[10px] text-zinc-400 font-normal">
+                                (Bs ÷ {bcvRate.toFixed(2)})
+                              </span>
+                            </div>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -669,19 +785,26 @@ export function PaymentSplitForm({
                         }
                       >
                         {rowAfterThisUsd > 0.01
-                          ? `Resta: ${formatCurrency(rowAfterThisUsd)} (${formatBs(rowAfterThisUsd, bcvRate)})`
+                          ? split.cashCurrency === 'VES'
+                            ? `Resta: ${formatBs(rowAfterThisUsd, bcvRate)} ➔ ${formatCurrency(rowAfterThisUsd)}`
+                            : `Resta: ${formatCurrency(rowAfterThisUsd)} (${formatBs(rowAfterThisUsd, bcvRate)})`
                           : `Pago Completo (${formatCurrency(orderTotalUsd)})`}
                       </span>
                     </div>
                   </div>
                 )}
 
-                {/* PAGO MÓVIL: Mandatory Bank, Amount ($/Bs), and 6-digit Reference */}
+                {/* PAGO MÓVIL: Mandatory Bank, Amount in Bs (reconverted to $), and 6-digit Reference */}
                 {isPm && (
                   <div className="rounded-xl bg-zinc-900/90 border border-amber-500/35 p-2.5 space-y-2.5">
-                    <p className="text-[11px] font-semibold text-amber-400">
-                      Datos Obligatorios de Pago Móvil (Sin captura)
-                    </p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] font-semibold text-amber-400">
+                        Pago Móvil · Reconversión de Bs. a $ (Tasa BCV)
+                      </p>
+                      <span className="font-mono text-[10px] text-zinc-400 tabular-nums">
+                        Bs. {bcvRate.toFixed(2)} / $1
+                      </span>
+                    </div>
 
                     <div>
                       <label className="block text-[11px] text-zinc-300 mb-1">
@@ -705,26 +828,42 @@ export function PaymentSplitForm({
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <div>
-                        <label className="block text-[11px] text-zinc-300 mb-1">
-                          Monto ($) *
+                        <label className="block text-[11px] text-zinc-200 font-semibold mb-1">
+                          Monto Pagado en Bolívares (Bs.) *
                         </label>
                         <input
                           type="number"
                           step="0.01"
                           min="0.01"
                           required
-                          value={split.amountUsd}
-                          onChange={(e) =>
-                            handleUpdateSplit(split.id, { amountUsd: e.target.value })
-                          }
-                          placeholder="0.00"
-                          className="w-full rounded-lg bg-zinc-950 border border-white/15 px-2.5 py-1.5 text-xs font-mono text-white tabular-nums focus:outline-none focus:border-amber-500"
+                          value={split.amountBs}
+                          onChange={(e) => {
+                            const rawBs = e.target.value;
+                            const valBs = parseFloat(rawBs);
+                            if (Number.isNaN(valBs) || valBs <= 0) {
+                              handleUpdateSplit(split.id, {
+                                amountBs: rawBs,
+                                amountUsd: '',
+                              });
+                            } else {
+                              const usdConverted = (valBs / bcvRate).toFixed(2);
+                              handleUpdateSplit(split.id, {
+                                amountBs: rawBs,
+                                amountUsd: usdConverted,
+                              });
+                            }
+                          }}
+                          placeholder={remainingForThisRowBs.toFixed(2)}
+                          className="w-full rounded-lg bg-zinc-950 border border-amber-500/50 px-2.5 py-1.5 text-xs font-mono text-amber-300 font-bold tabular-nums focus:outline-none focus:border-amber-400"
                         />
-                        <span className="block text-[10px] font-mono text-amber-300/90 mt-0.5 tabular-nums">
-                          {formatBsAmount(numericBs)}
-                        </span>
+                        <div className="mt-1 flex items-center justify-between text-[11px] font-mono tabular-nums bg-zinc-950/80 rounded px-2 py-1 border border-emerald-500/25">
+                          <span className="text-zinc-400 font-sans">Reconversión ($):</span>
+                          <strong className="text-emerald-400">
+                            {formatCurrency(numericUsd)}
+                          </strong>
+                        </div>
                       </div>
 
                       <div>
@@ -750,6 +889,9 @@ export function PaymentSplitForm({
                             className="w-full rounded-lg bg-zinc-950 border border-white/15 pl-7 pr-2.5 py-1.5 text-xs font-mono text-white tabular-nums focus:outline-none focus:border-amber-500"
                           />
                         </div>
+                        <span className="block text-[10px] text-zinc-400 mt-1">
+                          Obligatorio (sin carga de capture)
+                        </span>
                       </div>
                     </div>
 
@@ -765,14 +907,14 @@ export function PaymentSplitForm({
                         }
                       >
                         {rowAfterThisUsd > 0.01
-                          ? `Resta: ${formatCurrency(rowAfterThisUsd)} (${formatBs(rowAfterThisUsd, bcvRate)})`
-                          : `Pago Completo (${formatCurrency(orderTotalUsd)})`}
+                          ? `Resta: ${formatBs(rowAfterThisUsd, bcvRate)} ➔ ${formatCurrency(rowAfterThisUsd)}`
+                          : `Pago Completo (${formatBsAmount(numericBs)} ➔ ${formatCurrency(numericUsd)})`}
                       </span>
                     </div>
                   </div>
                 )}
 
-                {/* OTHER METHODS (Zelle, Tarjeta, etc.): Amount Input + Restante */}
+                {/* OTHER METHODS (Zelle, Tarjeta, etc.): Amount Input in $ + Bs Reference */}
                 {!isEf && !isPm && (
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between gap-2">
@@ -780,7 +922,7 @@ export function PaymentSplitForm({
                         Monto a pagar con {method?.name} ($) *
                       </label>
                       <span className="font-mono text-[11px] text-amber-300 tabular-nums">
-                        {formatBsAmount(numericBs)}
+                        {formatBsAmount(numericUsd * bcvRate)}
                       </span>
                     </div>
                     <input
@@ -789,9 +931,17 @@ export function PaymentSplitForm({
                       min="0.01"
                       required
                       value={split.amountUsd}
-                      onChange={(e) =>
-                        handleUpdateSplit(split.id, { amountUsd: e.target.value })
-                      }
+                      onChange={(e) => {
+                        const valUsd = parseFloat(e.target.value);
+                        const eqBs =
+                          !Number.isNaN(valUsd) && valUsd > 0
+                            ? (valUsd * bcvRate).toFixed(2)
+                            : '';
+                        handleUpdateSplit(split.id, {
+                          amountUsd: e.target.value,
+                          amountBs: eqBs,
+                        });
+                      }}
                       placeholder="0.00"
                       className="w-full rounded-lg bg-zinc-900 border border-white/15 px-2.5 py-1.5 text-xs font-mono text-white tabular-nums focus:outline-none focus:border-amber-500"
                     />
@@ -884,7 +1034,7 @@ export function PaymentSplitForm({
               <span>
                 Faltan{' '}
                 <strong className="font-mono">
-                  {formatCurrency(remainingUsd)} ({formatBs(remainingUsd, bcvRate)})
+                  {formatBs(remainingUsd, bcvRate)} ➔ {formatCurrency(remainingUsd)}
                 </strong>{' '}
                 para completar el pago total. Usa &ldquo;Añadir otro pago&rdquo; o ajusta el monto.
               </span>

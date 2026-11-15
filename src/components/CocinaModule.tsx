@@ -442,7 +442,15 @@ export function CocinaModule() {
                         <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400 mt-1 tabular-nums">
                           <span>{formatTime(order.createdAt)}</span>
                           <span aria-hidden="true">·</span>
-                          <span>{order.source === 'mesera' ? 'Sala / Mesera' : 'Menú Público'}</span>
+                          <span className="text-amber-300/90 font-semibold">
+                            {order.source === 'mesera'
+                              ? order.waiterName
+                                ? `Mesera/o: ${order.waiterName}`
+                                : 'Sala / Mesera'
+                              : order.waiterName
+                                ? `Atendido: ${order.waiterName}`
+                                : 'Menú Público'}
+                          </span>
                           <span aria-hidden="true">·</span>
                           <span className="font-mono text-zinc-300">
                             {formatCurrency(order.total)} (

@@ -14,12 +14,12 @@ import {
   ExternalLink,
   Eye,
   FileCheck2,
+  FileText,
   KeyRound,
   LogOut,
   MessageCircle,
   Phone,
   Plus,
-  Printer,
   QrCode,
   Receipt,
   Share2,
@@ -40,12 +40,13 @@ import {
 } from '../types/restaurant';
 import {
   AddDriverModal,
+  ClearAllOrdersConfirmModal,
   CreateGerenciaOrderModal,
+  DetailedClosurePdfModal,
   DispatchDeliveryModal,
   EditOrderModal,
   OrderCashierDetailModal,
   PasswordsModal,
-  ThermalReceiptModal,
 } from './GerenciaModals';
 import {
   BcvRateBanner,
@@ -111,6 +112,7 @@ export function GerenciaModule() {
     confirmOrderForClosure,
     confirmAllOpenOrdersForClosure,
     performCashClosure,
+    clearAllOrdersExceptClosures,
     getPublicMenuUrl,
     navigateToModule,
     logout,
@@ -126,7 +128,8 @@ export function GerenciaModule() {
   const [addDriverModalOpen, setAddDriverModalOpen] = useState(false);
   const [dispatchingOrder, setDispatchingOrder] = useState<Order | null>(null);
   const [createGerenciaOrderOpen, setCreateGerenciaOrderOpen] = useState(false);
-  const [thermalPrintTarget, setThermalPrintTarget] = useState<{
+  const [clearAllConfirmOpen, setClearAllConfirmOpen] = useState(false);
+  const [pdfReportTarget, setPdfReportTarget] = useState<{
     orders: Order[];
     closure?: CashClosureRecord | null;
   } | null>(null);
@@ -549,7 +552,9 @@ export function GerenciaModule() {
             </div>
             <p className="text-[11px] text-zinc-400 mt-0.5 tabular-nums">
               {formatTime(order.createdAt)} ·{' '}
-              {order.source === 'mesera' ? 'Mesera' : 'Menú Público'}
+              {order.source === 'mesera'
+                ? `Mesera${order.waiterName ? `: ${order.waiterName}` : ''}`
+                : 'Menú Público'}
               {order.customerName ? ` · ${order.customerName}` : ''}
             </p>
           </div>
@@ -581,10 +586,20 @@ export function GerenciaModule() {
 
         {order.pagoMovilDetails && (
           <div className="text-[11px] text-zinc-300 bg-zinc-900/90 rounded-lg px-2.5 py-1.5 border border-white/5 font-mono tabular-nums">
-            {order.pagoMovilDetails.bank} · Monto:{' '}
-            {formatCurrency(order.pagoMovilDetails.amount)} · Ref:{' '}
+            {order.pagoMovilDetails.bank} ·{' '}
+            <strong className="text-amber-300">
+              {formatBsAmount(
+                order.pagoMovilDetails.amountBs ||
+                  order.pagoMovilDetails.amount * rate
+              )}
+            </strong>{' '}
+            ➔{' '}
+            <strong className="text-emerald-400">
+              {formatCurrency(order.pagoMovilDetails.amount)}
+            </strong>{' '}
+            · Ref:{' '}
             <strong className="text-amber-400">
-              {order.pagoMovilDetails.referenceLast6}
+              #{order.pagoMovilDetails.referenceLast6}
             </strong>
           </div>
         )}
@@ -812,29 +827,30 @@ export function GerenciaModule() {
                           : openShiftOrders;
                       if (targetOrders.length === 0) {
                         showToast(
-                          'No hay pedidos en el turno actual para imprimir.',
+                          'No hay pedidos en el turno actual para exportar a PDF.',
                           'error'
                         );
                         return;
                       }
-                      setThermalPrintTarget({
+                      setPdfReportTarget({
                         orders: targetOrders,
                         closure: null,
                       });
                     }}
                     className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/45 text-xs font-bold text-amber-300 cursor-pointer whitespace-nowrap"
                   >
-                    <Printer className="w-4 h-4 text-amber-400" />
-                    <span>Imprimir Reporte Térmico (80mm)</span>
+                    <FileText className="w-4 h-4 text-amber-400" />
+                    <span>Exportar Reporte de Cierre en PDF Detallado</span>
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => handleExportCashClosureSummary()}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-amber-500/35 text-xs font-bold text-amber-300 cursor-pointer whitespace-nowrap"
+                    onClick={() => setClearAllConfirmOpen(true)}
+                    disabled={orders.length === 0}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-950/40 hover:bg-red-900/50 disabled:opacity-40 disabled:cursor-not-allowed border border-red-500/40 text-xs font-bold text-red-300 cursor-pointer whitespace-nowrap"
                   >
-                    <Download className="w-4 h-4 text-amber-400" />
-                    <span>Exportar Resumen (.txt)</span>
+                    <Trash2 className="w-4 h-4 text-red-400" />
+                    <span>Limpiar Todo</span>
                   </button>
 
                   <button
@@ -884,7 +900,7 @@ export function GerenciaModule() {
 
                 <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5">
                   <p className="text-xs text-zinc-400">
-                    Dinero Recaudado en Efectivo ($ / Bs)
+                    Dinero Recaudado en Efectivo ($ / Bs ➔ $)
                   </p>
                   <div className="mt-1.5 space-y-1 font-mono tabular-nums">
                     <div className="flex items-center justify-between text-xs">
@@ -895,8 +911,11 @@ export function GerenciaModule() {
                     </div>
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-zinc-400 font-sans">Efectivo Bs:</span>
-                      <strong className="text-amber-400 text-sm">
-                        {formatBsAmount(collectedBreakdown.efectivoBs)}
+                      <strong className="text-amber-400 text-xs">
+                        {formatBsAmount(collectedBreakdown.efectivoBs)} ➔{' '}
+                        <span className="text-emerald-400">
+                          {formatCurrency(collectedBreakdown.efectivoBs / bcvRate)}
+                        </span>
                       </strong>
                     </div>
                   </div>
@@ -904,14 +923,16 @@ export function GerenciaModule() {
 
                 <div className="rounded-2xl bg-zinc-900/70 border border-white/10 p-5">
                   <p className="text-xs text-zinc-400">
-                    Dinero Recaudado Digital (Pago Móvil / Zelle / POS)
+                    Dinero Recaudado Digital (Pago Móvil Bs ➔ $ / Zelle / POS)
                   </p>
                   <div className="mt-1.5 space-y-1 font-mono text-xs tabular-nums">
                     <div className="flex items-center justify-between">
                       <span className="text-zinc-400 font-sans">Pago Móvil:</span>
                       <strong className="text-amber-300">
-                        {formatCurrency(collectedBreakdown.pagoMovilUsd)} (
-                        {formatBsAmount(collectedBreakdown.pagoMovilBs)})
+                        {formatBsAmount(collectedBreakdown.pagoMovilBs)} ➔{' '}
+                        <span className="text-emerald-400">
+                          {formatCurrency(collectedBreakdown.pagoMovilUsd)}
+                        </span>
                       </strong>
                     </div>
                     <div className="flex items-center justify-between">
@@ -991,6 +1012,11 @@ export function GerenciaModule() {
                               </td>
                               <td className="py-3 px-4 text-zinc-200">
                                 <div>{modalityLabel(ord.modality, ord.tableNumber)}</div>
+                                {ord.waiterName && (
+                                  <div className="text-[11px] text-emerald-300 font-medium">
+                                    Mesera/o: {ord.waiterName}
+                                  </div>
+                                )}
                                 <div className="mt-0.5">
                                   <OrderStatusText status={ord.status} />
                                 </div>
@@ -1009,6 +1035,13 @@ export function GerenciaModule() {
                                     <div className="inline-flex flex-wrap items-center gap-1.5 text-xs font-mono tabular-nums text-zinc-200 bg-zinc-950/90 border border-amber-500/25 rounded-lg px-2.5 py-1">
                                       <span>{ord.pagoMovilDetails.bank}</span>
                                       <span className="text-zinc-600">·</span>
+                                      <strong className="text-amber-300">
+                                        {formatBsAmount(
+                                          ord.pagoMovilDetails.amountBs ||
+                                            ord.pagoMovilDetails.amount * rate
+                                        )}
+                                      </strong>
+                                      <span className="text-zinc-500">➔</span>
                                       <strong className="text-emerald-400">
                                         {formatCurrency(ord.pagoMovilDetails.amount)}
                                       </strong>
@@ -1019,13 +1052,23 @@ export function GerenciaModule() {
                                     </div>
                                   )}
                                   {ord.cashCurrency && (
-                                    <div className="text-xs text-emerald-300 font-medium">
-                                      Efectivo pagado en:{' '}
-                                      <strong>
-                                        {ord.cashCurrency === 'VES'
-                                          ? 'Bolívares (Bs)'
-                                          : 'Dólares ($)'}
-                                      </strong>
+                                    <div className="text-xs text-emerald-300 font-medium font-mono tabular-nums">
+                                      {ord.cashCurrency === 'VES' ? (
+                                        <span>
+                                          Efectivo (Bs ➔ $):{' '}
+                                          <strong className="text-amber-300">
+                                            {formatBs(ord.total, rate)}
+                                          </strong>{' '}
+                                          ➔{' '}
+                                          <strong className="text-emerald-400">
+                                            {formatCurrency(ord.total)}
+                                          </strong>
+                                        </span>
+                                      ) : (
+                                        <span className="font-sans">
+                                          Efectivo pagado en: <strong>Dólares ($)</strong>
+                                        </span>
+                                      )}
                                     </div>
                                   )}
                                   {!ord.pagoMovilDetails && !ord.cashCurrency && (
@@ -1122,26 +1165,19 @@ export function GerenciaModule() {
                             <button
                               type="button"
                               onClick={() => {
-                                const shiftOrders = orders.filter(
-                                  (o) => o.closedInShiftId === c.id
-                                );
-                                setThermalPrintTarget({
+                                const shiftOrders =
+                                  c.ordersSnapshot && c.ordersSnapshot.length > 0
+                                    ? c.ordersSnapshot
+                                    : orders.filter((o) => o.closedInShiftId === c.id);
+                                setPdfReportTarget({
                                   orders: shiftOrders,
                                   closure: c,
                                 });
                               }}
-                              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-xs font-bold text-amber-300 cursor-pointer"
+                              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-xs font-bold text-amber-300 cursor-pointer"
                             >
-                              <Printer className="w-3.5 h-3.5" />
-                              <span>Imprimir Térmico</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleExportCashClosureSummary(c)}
-                              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-amber-500/35 text-xs font-semibold text-amber-300 cursor-pointer"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                              <span>Exportar</span>
+                              <FileText className="w-3.5 h-3.5" />
+                              <span>Exportar Reporte en PDF Detallado</span>
                             </button>
                           </div>
                         </div>
@@ -1481,7 +1517,17 @@ export function GerenciaModule() {
                           {ord.pagoMovilDetails && (
                             <div className="text-xs font-mono text-zinc-300 bg-zinc-900 rounded-lg px-2.5 py-1.5 border border-white/5 tabular-nums">
                               Pago Móvil: {ord.pagoMovilDetails.bank} ·{' '}
-                              {formatCurrency(ord.pagoMovilDetails.amount)} · Ref:{' '}
+                              <strong className="text-amber-300">
+                                {formatBsAmount(
+                                  ord.pagoMovilDetails.amountBs ||
+                                    ord.pagoMovilDetails.amount * rate
+                                )}
+                              </strong>{' '}
+                              ➔{' '}
+                              <strong className="text-emerald-400">
+                                {formatCurrency(ord.pagoMovilDetails.amount)}
+                              </strong>{' '}
+                              · Ref:{' '}
                               <strong className="text-amber-400">
                                 #{ord.pagoMovilDetails.referenceLast6}
                               </strong>
@@ -2141,12 +2187,20 @@ export function GerenciaModule() {
           onClose={() => setCreateGerenciaOrderOpen(false)}
         />
       )}
-      {thermalPrintTarget && (
-        <ThermalReceiptModal
-          orders={thermalPrintTarget.orders}
-          closureRecord={thermalPrintTarget.closure}
+      {pdfReportTarget && (
+        <DetailedClosurePdfModal
+          orders={pdfReportTarget.orders}
+          closureRecord={pdfReportTarget.closure}
           bcvRate={bcvRate}
-          onClose={() => setThermalPrintTarget(null)}
+          onClose={() => setPdfReportTarget(null)}
+        />
+      )}
+      {clearAllConfirmOpen && (
+        <ClearAllOrdersConfirmModal
+          orderCount={orders.length}
+          closureCount={closures.length}
+          onConfirm={clearAllOrdersExceptClosures}
+          onClose={() => setClearAllConfirmOpen(false)}
         />
       )}
     </div>

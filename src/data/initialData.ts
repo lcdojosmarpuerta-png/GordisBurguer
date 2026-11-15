@@ -36,6 +36,14 @@ export const PAGO_MOVIL_BANKS: string[] = [
   'Banplus (0174)',
 ];
 
+export const INITIAL_WAITERS: string[] = [
+  'Valentina Gómez',
+  'Mariana Rodríguez',
+  'Carlos Alfonzo',
+  'Andrea Bolívar',
+  'Daniela Silva',
+];
+
 export const INITIAL_DRIVERS: DeliveryDriver[] = [
   {
     id: 'drv-1',
@@ -193,6 +201,7 @@ export const INITIAL_ORDERS: Order[] = [
     source: 'mesera',
     modality: 'sitio',
     tableNumber: 3,
+    waiterName: 'Valentina Gómez',
     items: [
       {
         productId: 'prod-1',
@@ -256,6 +265,7 @@ export const INITIAL_ORDERS: Order[] = [
     pagoMovilDetails: {
       bank: 'Banesco (0134)',
       amount: 14.0,
+      amountBs: Number((14.0 * DEFAULT_BCV_RATE).toFixed(2)),
       referenceLast6: '489821',
     },
     cashCurrency: 'USD',
@@ -269,6 +279,7 @@ export const INITIAL_ORDERS: Order[] = [
         pagoMovilDetails: {
           bank: 'Banesco (0134)',
           amount: 14.0,
+          amountBs: Number((14.0 * DEFAULT_BCV_RATE).toFixed(2)),
           referenceLast6: '489821',
         },
       },
@@ -292,6 +303,7 @@ export const INITIAL_ORDERS: Order[] = [
     source: 'mesera',
     modality: 'sitio',
     tableNumber: 7,
+    waiterName: 'Mariana Rodríguez',
     items: [
       {
         productId: 'prod-3',

@@ -13,6 +13,8 @@ import {
   Share2,
   ShoppingBag,
   Trash2,
+  UserCheck,
+  UserPlus,
   Utensils,
   X,
 } from 'lucide-react';
@@ -22,6 +24,8 @@ import { EditOrderModal } from './GerenciaModals';
 import {
   PaymentSplitDraft,
   PaymentSplitForm,
+  isEfectivoMethod,
+  isPagoMovilMethod,
   validateAndBuildPaymentSplits,
 } from './PaymentSplitForm';
 import {
@@ -30,6 +34,7 @@ import {
   OrderStatusText,
   SafeProductImage,
   formatBs,
+  formatBsAmount,
   formatCurrency,
   formatTime,
   modalityLabel,
@@ -48,8 +53,10 @@ export function MeseraModule() {
   const {
     products,
     paymentMethods,
+    waiters,
     orders,
     bcvRate,
+    addWaiter,
     createOrder,
     updateOrderStatus,
     getPublicMenuUrl,
@@ -62,10 +69,20 @@ export function MeseraModule() {
   const [activeTab, setActiveTab] = useState<'carta' | 'ordenes'>('carta');
   const [editingSalaOrder, setEditingSalaOrder] = useState<Order | null>(null);
 
-  // Cart State
+  // Cart & Waiter State
   const [cart, setCart] = useState<OrderItem[]>([]);
   const [modality, setModality] = useState<'sitio' | 'llevar'>('sitio');
   const [tableNumber, setTableNumber] = useState<number>(1);
+  const [selectedWaiter, setSelectedWaiter] = useState<string>(waiters[0] ?? '');
+  const [addingNewWaiter, setAddingNewWaiter] = useState(false);
+  const [newWaiterInput, setNewWaiterInput] = useState('');
+
+  useEffect(() => {
+    if (!selectedWaiter && waiters.length > 0) {
+      setSelectedWaiter(waiters[0]);
+    }
+  }, [waiters, selectedWaiter]);
+
   const enabledPaymentMethods = useMemo(
     () => paymentMethods.filter((pm) => pm.enabled),
     [paymentMethods]
@@ -174,9 +191,25 @@ export function MeseraModule() {
     );
   };
 
+  const handleSaveNewWaiter = () => {
+    const cleaned = newWaiterInput.trim();
+    if (!cleaned) {
+      showToast('Escribe el nombre de la mesera o mesero.', 'error');
+      return;
+    }
+    addWaiter(cleaned);
+    setSelectedWaiter(cleaned);
+    setNewWaiterInput('');
+    setAddingNewWaiter(false);
+  };
+
   const handleConfirmOrder = () => {
     if (cart.length === 0) {
       showToast('Agrega al menos un producto al pedido.', 'error');
+      return;
+    }
+    if (!selectedWaiter.trim()) {
+      showToast('Selecciona el nombre de la mesera/o que realiza el pedido.', 'error');
       return;
     }
     if (modality === 'sitio' && (!tableNumber || tableNumber < 1)) {
@@ -204,6 +237,7 @@ export function MeseraModule() {
       source: 'mesera',
       modality,
       tableNumber: modality === 'sitio' ? tableNumber : undefined,
+      waiterName: selectedWaiter.trim(),
       items: cart.map((item) => ({
         ...item,
         notes: item.notes?.trim() || undefined,
@@ -222,7 +256,10 @@ export function MeseraModule() {
     setGeneralNotes('');
     setPaymentSplits([]);
     setMobileCartOpen(false);
-    showToast(`Comanda ${order.code} enviada a Cocina.`, 'success');
+    showToast(
+      `Comanda ${order.code} registrada por ${selectedWaiter} y enviada a Cocina.`,
+      'success'
+    );
   };
 
   const handleCopyMenuLink = async () => {
@@ -264,8 +301,57 @@ export function MeseraModule() {
         )}
       </div>
 
-      {/* Scrollable Body for Modality + Items + Multi-Payment Form */}
+      {/* Scrollable Body for Waiter Selector + Modality + Items + Multi-Payment Form */}
       <div className="flex-1 overflow-y-auto my-3 space-y-4 pr-1">
+        {/* Waiter / Waitress Name Selector (Mesera/o) */}
+        <div className="rounded-xl bg-zinc-950 border border-amber-500/35 p-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <label className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-400">
+              <UserCheck className="w-4 h-4" />
+              <span>Mesera / Mesero que realiza el pedido *</span>
+            </label>
+            <button
+              type="button"
+              onClick={() => setAddingNewWaiter((prev) => !prev)}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 hover:underline cursor-pointer"
+            >
+              <UserPlus className="w-3 h-3" />
+              <span>{addingNewWaiter ? 'Cancelar' : '+ Nuevo'}</span>
+            </button>
+          </div>
+
+          {addingNewWaiter ? (
+            <div className="flex items-center gap-1.5">
+              <input
+                type="text"
+                value={newWaiterInput}
+                onChange={(e) => setNewWaiterInput(e.target.value)}
+                placeholder="Nombre de la mesera o mesero..."
+                className="flex-1 rounded-lg bg-zinc-900 border border-white/15 px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500"
+              />
+              <button
+                type="button"
+                onClick={handleSaveNewWaiter}
+                className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold cursor-pointer"
+              >
+                Guardar
+              </button>
+            </div>
+          ) : (
+            <select
+              value={selectedWaiter}
+              onChange={(e) => setSelectedWaiter(e.target.value)}
+              className="w-full rounded-lg bg-zinc-900 border border-white/15 px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-amber-500"
+            >
+              {waiters.map((w) => (
+                <option key={w} value={w} className="bg-zinc-900">
+                  {w}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
         {/* Modality Selector */}
         <div>
           <span className="block text-xs font-medium text-zinc-400 mb-2">
@@ -657,6 +743,12 @@ export function MeseraModule() {
                             <span className="text-sm font-semibold text-amber-400">
                               {modalityLabel(order.modality, order.tableNumber)}
                             </span>
+                            {order.waiterName && (
+                              <p className="text-xs font-medium text-emerald-300 mt-0.5">
+                                <UserCheck className="w-3.5 h-3.5 inline mr-1" />
+                                Atendido por: <strong>{order.waiterName}</strong>
+                              </p>
+                            )}
                           </div>
                           <OrderStatusText status={order.status} />
                         </div>
@@ -680,34 +772,67 @@ export function MeseraModule() {
 
                         {order.payments && order.payments.length > 0 ? (
                           <div className="mt-3 space-y-1">
-                            {order.payments.map((sp) => (
-                              <div
-                                key={sp.id}
-                                className="text-xs font-mono text-zinc-300 bg-zinc-950 rounded-lg px-2.5 py-1.5 border border-white/5 tabular-nums"
-                              >
-                                <span className="font-sans text-amber-400 font-semibold">
-                                  {sp.methodName}
-                                  {sp.cashCurrency
-                                    ? ` (${sp.cashCurrency === 'VES' ? 'Bs' : '$'})`
-                                    : ''}
-                                  :
-                                </span>{' '}
-                                {formatCurrency(sp.amountUsd)} ({formatBs(sp.amountUsd, rate)})
-                                {sp.pagoMovilDetails && (
-                                  <span>
-                                    {' '}
-                                    · {sp.pagoMovilDetails.bank} · Ref: #
-                                    {sp.pagoMovilDetails.referenceLast6}
-                                  </span>
-                                )}
-                              </div>
-                            ))}
+                            {order.payments.map((sp) => {
+                              const isPm = isPagoMovilMethod(sp.methodId, sp.methodName);
+                              const isEf = isEfectivoMethod(sp.methodId, sp.methodName);
+                              const isEfBs = isEf && sp.cashCurrency === 'VES';
+                              const spBs =
+                                sp.amountBs && sp.amountBs > 0
+                                  ? sp.amountBs
+                                  : Number((sp.amountUsd * rate).toFixed(2));
+                              return (
+                                <div
+                                  key={sp.id}
+                                  className="text-xs font-mono text-zinc-300 bg-zinc-950 rounded-lg px-2.5 py-1.5 border border-white/5 tabular-nums"
+                                >
+                                  <span className="font-sans text-amber-400 font-semibold">
+                                    {sp.methodName}
+                                    {sp.cashCurrency
+                                      ? ` (${sp.cashCurrency === 'VES' ? 'Bs ➔ $' : '$'})`
+                                      : ''}
+                                    :
+                                  </span>{' '}
+                                  {isPm || isEfBs ? (
+                                    <span>
+                                      <strong className="text-amber-300">
+                                        {formatBsAmount(spBs)}
+                                      </strong>{' '}
+                                      ➔{' '}
+                                      <strong className="text-emerald-400">
+                                        {formatCurrency(sp.amountUsd)}
+                                      </strong>
+                                    </span>
+                                  ) : (
+                                    <span>
+                                      {formatCurrency(sp.amountUsd)} ({formatBsAmount(spBs)})
+                                    </span>
+                                  )}
+                                  {sp.pagoMovilDetails && (
+                                    <span>
+                                      {' '}
+                                      · {sp.pagoMovilDetails.bank} · Ref: #
+                                      {sp.pagoMovilDetails.referenceLast6}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         ) : (
                           order.pagoMovilDetails && (
                             <div className="mt-3 text-xs font-mono text-zinc-300 bg-zinc-950 rounded-lg px-2.5 py-1.5 border border-white/5 tabular-nums">
                               {order.pagoMovilDetails.bank} ·{' '}
-                              {formatCurrency(order.pagoMovilDetails.amount)} · Ref:{' '}
+                              <strong className="text-amber-300">
+                                {formatBsAmount(
+                                  order.pagoMovilDetails.amountBs ||
+                                    order.pagoMovilDetails.amount * rate
+                                )}
+                              </strong>{' '}
+                              ➔{' '}
+                              <strong className="text-emerald-400">
+                                {formatCurrency(order.pagoMovilDetails.amount)}
+                              </strong>{' '}
+                              · Ref:{' '}
                               <strong className="text-amber-400">
                                 #{order.pagoMovilDetails.referenceLast6}
                               </strong>
